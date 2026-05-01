@@ -1,0 +1,24 @@
+python3 main.py --mode keyboard --gun pkm
+Surprisingly, the recoil doesn't cause the drone to tumble backwards or forwards, but rather flips it on it's side for some reason.
+
+glock18 has same effect
+
+python3 main.py --mode keyboard --gun m4_carbine
+Normal PID ccreates a cradling effect, where the drone returns to it's original position after burst. 
+
+m249 saw is able to hold position even while firing
+
+akm becomes unstable and spins with the machine gun as it's axis
+short bursts give cradle effect
+
+M134 immediately falls out of the sky
+
+mp5 more stable
+
+aa12_shotgun recovers after some sideways wobbling, but nonetheless flips over
+
+
+Barret doesn't have any recoil?
+Maybe try burstfire automatics (although, I guess bursts ccan be created by the AI anyways)
+why does the drone wobble sideways?
+will moving ehile shooting affect bullet destination despite aiming at the rights spot when firing?
