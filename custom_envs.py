@@ -30,15 +30,17 @@ class SimpleRewardEnv(drone_module.DroneEnv):
         r += 10.0 * info["hits"]
         r -= 0.05 * info["shots_fired"]
 
+        state = get_state(self.data)
+
         if info["shots_fired"] > 0: 
             # find distance between gun direction and target
-            state = get_state(self.data)
             R = quat_to_rot(state["quat"])
             gun_dir_world = R @ np.asarray(self.weapon.fire_dir_body, float)
             muzzle_world = state["pos"] + R @ (
                 np.asarray(self.weapon.mount_offset_m, float)
                 + np.asarray(self.weapon.fire_dir_body, float) * 0.30   # barrel length
             )
+            target_loc = self.target_field.targets[0].pos
             v = target_loc - muzzle_world
             perp = v - np.dot(v, gun_dir_world) * gun_dir_world          # gun_dir_world is unit
             miss_distance = float(np.linalg.norm(perp))
