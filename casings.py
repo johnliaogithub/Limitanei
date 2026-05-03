@@ -1,11 +1,4 @@
-"""Bullets and casings, optional simulation layer.
-
-Bullets are simulated entirely in Python (their initial speed of 400-940 m/s
-would tunnel through any reasonable MuJoCo timestep), and rendered as line
-segments in the viewer's user-scene. They obey ballistics: gravity + simple
-quadratic drag.
-
-    F_drag  =  -0.5 * rho * Cd * A * |v| * v        (per kg of bullet)
+"""Spent-casing physics + propeller-impact detection.
 
 Casings are slow enough (3-8 m/s ejection) to be honest MuJoCo free-joint
 rigid bodies. We pre-allocate a fixed pool of casing bodies in the XML
@@ -31,10 +24,9 @@ import numpy as np
 import mujoco
 
 
-# ============================================================================
-#  XML snippets that need to be injected into build_xml() when projectiles
-#  are enabled. Returned as strings; main.py glues them in.
-# ============================================================================
+# ---------------------------------------------------------------------------
+#  XML snippets injected into build_xml() when casings are enabled.
+# ---------------------------------------------------------------------------
 
 def casing_pool_xml(n: int, weapon, contype: int = 8, conaffinity: int = 7,
                     park_z: float = -50.0) -> str:
@@ -86,9 +78,9 @@ def prop_disc_geom_xml(L: float, drone_top_z: float = 0.04) -> str:
             rgba="0.4 0.4 0.4 0.18" contype="4" conaffinity="8"/>"""
 
 
-# ============================================================================
+# ---------------------------------------------------------------------------
 #  Casing pool
-# ============================================================================
+# ---------------------------------------------------------------------------
 
 class CasingPool:
     """Manages the ring buffer of pre-allocated casing bodies."""
@@ -255,68 +247,3 @@ class CasingPool:
                       f"real prop would chip or break")
             self._park(slot)
         return len(slots_to_kill)
-
-
-# ============================================================================
-#  Bullets - tracked in Python, drawn as line segments in viewer.user_scn.
-# ============================================================================
-
-class BulletPool:
-    """Simple ballistic projectiles. Position-Verlet integration with
-    quadratic air drag. Rendered as segments from previous to current position
-    so each bullet leaves a visible streak in the viewer."""
-
-    def __init__(self, pool_size: int, lifetime: float, gravity: float,
-                 drag_const: float, rng):
-        self.n = pool_size
-        self.lifetime = lifetime
-        self.g = gravity
-        self.drag_const = drag_const
-        self.rng = rng
-
-        self.pos = np.zeros((pool_size, 3))
-        self.prev_pos = np.zeros((pool_size, 3))
-        self.vel = np.zeros((pool_size, 3))
-        self.life = np.zeros(pool_size)
-        self.next = 0
-
-    def spawn(self, pos: np.ndarray, vel: np.ndarray):
-        i = self.next
-        self.next = (self.next + 1) % self.n
-        self.pos[i] = pos
-        self.prev_pos[i] = pos
-        self.vel[i] = vel
-        self.life[i] = self.lifetime
-
-    def step(self, dt: float):
-        active = self.life > 0
-        if not np.any(active):
-            return
-        v = self.vel[active]
-        speed = np.linalg.norm(v, axis=1, keepdims=True)
-        # acceleration = gravity - drag_const * |v| * v
-        acc = np.array([0.0, 0.0, -self.g])[None, :] - self.drag_const * speed * v
-        self.prev_pos[active] = self.pos[active]
-        self.pos[active] += v * dt + 0.5 * acc * dt * dt
-        self.vel[active] += acc * dt
-        self.life[active] -= dt
-        # cull anything that hit the ground
-        below = (self.pos[:, 2] < 0.0) & (self.life > 0)
-        self.life[below] = 0.0
-
-    def render(self, user_scn):
-        """Add a line geom for each active bullet to the viewer scene.
-        user_scn must be reset (ngeom=0) before this call."""
-        size = np.array([0.003, 0.0, 0.0])
-        rgba = np.array([1.0, 0.85, 0.2, 1.0])
-        for i in range(self.n):
-            if self.life[i] <= 0:
-                continue
-            if user_scn.ngeom >= user_scn.maxgeom:
-                break
-            g = user_scn.geoms[user_scn.ngeom]
-            mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_LINE, size,
-                                np.zeros(3), np.zeros(9), rgba)
-            mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_LINE, 0.005,
-                                 self.prev_pos[i], self.pos[i])
-            user_scn.ngeom += 1

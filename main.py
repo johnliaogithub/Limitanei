@@ -27,7 +27,11 @@ from controller import CascadedController, quat_to_euler
 from modes import KeyboardSetpoint, AutonomousSetpoint
 import gun as gun_module
 import disturbances as dst
-import projectiles as proj
+import bullets as bul
+import casings as cas
+import targets as tgt
+from logger import TrajectoryRecorder
+from dataclasses import asdict
 
 
 # ----------------------------------------------------------------------------
@@ -49,7 +53,8 @@ def compute_loadout(weapon: gun_module.Gun):
     return total_mass, (Ixx, Iyy, Izz)
 
 
-def build_xml(weapon: gun_module.Gun, projectiles_on: bool) -> str:
+def build_xml(weapon: gun_module.Gun, casings_on: bool,
+              targets_data=None) -> str:
     L = DRONE.arm_length / np.sqrt(2)         # X-config offset along x and y
     cq = DRONE.k_q_over_k_t                   # gear[5] = yaw drag torque per unit thrust
     Tmax = DRONE.max_thrust_per_rotor
@@ -61,15 +66,16 @@ def build_xml(weapon: gun_module.Gun, projectiles_on: bool) -> str:
 
     # contype/conaffinity bitmasks (see projectiles.py for the full table).
     # bit 1 = floor, bit 2 = drone airframe, bit 4 = prop discs, bit 8 = casings.
-    if projectiles_on:
+    if casings_on:
         # Drone airframe collides with floor only (bit 1).
         airframe_ct = 'contype="2" conaffinity="1"'
-        prop_disc_xml = proj.prop_disc_geom_xml(L)
-        casing_pool_xml = proj.casing_pool_xml(PROJ.casing_pool_size, weapon)
+        prop_disc_xml = cas.prop_disc_geom_xml(L)
+        casing_pool_xml = cas.casing_pool_xml(PROJ.casing_pool_size, weapon)
     else:
         airframe_ct = ''
         prop_disc_xml = ''
         casing_pool_xml = ''
+    target_xml_str = tgt.target_xml(targets_data) if targets_data else ''
 
     return f"""
 <mujoco model="quadrotor_armed">
@@ -115,6 +121,7 @@ def build_xml(weapon: gun_module.Gun, projectiles_on: bool) -> str:
       <site name="muzzle" pos="{mx + barrel_len} {my} {mz}" size="0.03" rgba="1 0.6 0 0.9"/>
     </body>
     {casing_pool_xml}
+    {target_xml_str}
   </worldbody>
 
   <actuator>
@@ -159,19 +166,6 @@ def quat_to_rot(q):
 
 
 # ----------------------------------------------------------------------------
-#  Bullet-drag constant for a given cartridge:
-#       acc_drag  =  -0.5 * rho * Cd * A * |v| * v / m
-#                 =  -drag_const * |v| * v
-# ----------------------------------------------------------------------------
-def bullet_drag_const(weapon: gun_module.Gun, rho: float = 1.225, cd: float = 0.30):
-    # Approximate the bullet's frontal area from its mass assuming lead-density 11340.
-    # Good enough for visualization-grade ballistics; you can tune cd later.
-    r = (3.0 * weapon.bullet_mass_kg / (4.0 * np.pi * 11340.0)) ** (1.0 / 3.0)
-    A = np.pi * r * r
-    return 0.5 * rho * cd * A / max(weapon.bullet_mass_kg, 1e-6)
-
-
-# ----------------------------------------------------------------------------
 #  Main loop
 # ----------------------------------------------------------------------------
 def main():
@@ -184,8 +178,10 @@ def main():
                         help="print every key event (vk/char/decoded token)")
     parser.add_argument('--seed', type=int, default=DIST.seed,
                         help="RNG seed for reproducibility (0 = system entropy)")
-    parser.add_argument('--projectiles', action='store_true',
-                        help="enable bullet + ejected-casing physics")
+    parser.add_argument('--bullets', action='store_true',
+                        help="enable Python-side bullet ballistics + tracer rendering")
+    parser.add_argument('--casings', action='store_true',
+                        help="enable MuJoCo casing physics + propeller-impact detection")
     parser.add_argument('--wind', type=float, nargs=3, metavar=('WX', 'WY', 'WZ'),
                         default=list(DIST.wind_mean_mps),
                         help="mean wind in m/s, world frame")
@@ -195,6 +191,18 @@ def main():
                         help="per-shot recoil impulse std dev (e.g. 0.04 = 4%%)")
     parser.add_argument('--recoil-angle-noise', type=float, default=DIST.recoil_angular_sigma_deg,
                         help="per-shot firing-direction wobble std dev (deg)")
+    parser.add_argument('--targets', type=int, default=0,
+                        help="number of targets in a ring around the origin (0 = none)")
+    parser.add_argument('--target-radius', type=float, default=5.0,
+                        help="ring radius for --targets (m)")
+    parser.add_argument('--target-height', type=float, default=1.5,
+                        help="ring height for --targets (m)")
+    parser.add_argument('--aim-yaw', action='store_true',
+                        help="autonomous mode yaws to face the nearest target")
+    parser.add_argument('--record', metavar='PATH', default=None,
+                        help="record trajectory + events to this .npz for later replay/analysis")
+    parser.add_argument('--record-decimation', type=int, default=5,
+                        help="record every Nth physics step (5 → 100 Hz log on a 500 Hz sim)")
     args = parser.parse_args()
 
     if args.list_guns:
@@ -214,37 +222,52 @@ def main():
     # ---- Build model + data ----
     weapon = gun_module.make_gun(args.gun)
     total_mass, inertia = compute_loadout(weapon)
-    PROJ.enabled = args.projectiles
-    model = mujoco.MjModel.from_xml_string(build_xml(weapon, PROJ.enabled))
+    PROJ.enabled = args.bullets or args.casings
+    targets_data = None
+    if args.targets > 0:
+        targets_data = tgt.default_ring(n=args.targets,
+                                        radius=args.target_radius,
+                                        height=args.target_height)
+    model_xml_str = build_xml(weapon, args.casings, targets_data)
+    model = mujoco.MjModel.from_xml_string(model_xml_str)
     data = mujoco.MjData(model)
     drone_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'drone')
     reset_sim(model, data)
+
+    target_field = None
+    if targets_data:
+        target_field = tgt.TargetField(model, data, targets_data, drone_body_id)
+        print(f"[main] Targets: {len(target_field.targets)} in a ring of "
+              f"r={args.target_radius:.1f} m at z={args.target_height:.1f} m")
 
     controller = CascadedController(DRONE, CTRL,
                                     total_mass=total_mass, inertia=inertia)
     if args.mode == 'keyboard':
         setpoint_gen = KeyboardSetpoint(CTRL, SIM, debug_keys=args.debug_keys)
     else:
-        setpoint_gen = AutonomousSetpoint(SIM, auto_fire=GUN.auto_fire_in_auto_mode)
+        setpoint_gen = AutonomousSetpoint(
+            SIM, auto_fire=GUN.auto_fire_in_auto_mode,
+            target_field=target_field, aim_yaw_at_target=args.aim_yaw)
 
     # ---- Disturbances ----
     wind = dst.WindModel(mean_mps=args.wind, sigma_mps=args.gust,
                          tau_s=DIST.wind_gust_tau_s, rng=rng)
 
-    # ---- Projectile pools (only if enabled) ----
+    # ---- Optional projectile layers (independently toggleable) ----
     casings = bullets = None
-    if PROJ.enabled:
-        casings = proj.CasingPool(model, data, weapon,
-                                  lifetime=PROJ.casing_lifetime_s,
-                                  rng=rng,
-                                  prop_collision_warn=PROJ.prop_collision_warn)
-        bullets = proj.BulletPool(pool_size=PROJ.bullet_pool_size,
-                                  lifetime=PROJ.bullet_lifetime_s,
-                                  gravity=DRONE.gravity,
-                                  drag_const=bullet_drag_const(weapon),
-                                  rng=rng)
-        print(f"[main] Projectile mode: {casings.n} casing slots, "
-              f"{PROJ.bullet_pool_size} bullet slots")
+    if args.casings:
+        casings = cas.CasingPool(model, data, weapon,
+                                 lifetime=PROJ.casing_lifetime_s,
+                                 rng=rng,
+                                 prop_collision_warn=PROJ.prop_collision_warn)
+        print(f"[main] Casing mode: {casings.n} pool slots")
+    if args.bullets:
+        bullets = bul.BulletPool(pool_size=PROJ.bullet_pool_size,
+                                 lifetime=PROJ.bullet_lifetime_s,
+                                 gravity=DRONE.gravity,
+                                 drag_const=bul.bullet_drag_const(weapon),
+                                 rng=rng)
+        print(f"[main] Bullet mode: {PROJ.bullet_pool_size} tracer slots")
 
     hover_thrust = total_mass * DRONE.gravity / 4.0
     thrust_cmd = np.full(4, hover_thrust)
@@ -252,6 +275,13 @@ def main():
 
     ctrl_period = 1.0 / SIM.control_hz
     last_ctrl_t = -1.0
+
+    # ---- Trajectory recorder (optional) ----
+    recorder = None
+    if args.record is not None:
+        recorder = TrajectoryRecorder(args.record, decimation=args.record_decimation)
+        print(f"[main] Recording to {args.record} every {args.record_decimation} steps "
+              f"(~{SIM.timestep * args.record_decimation * 1000:.1f} ms / sample)")
 
     print("[main] " + "=" * 60)
     print(f"[main] Mode = {args.mode}, Weapon = {weapon.name}")
@@ -289,6 +319,10 @@ def main():
                 casings._park(i)
         if bullets is not None:
             bullets.life[:] = 0.0
+        if target_field is not None:
+            target_field.reset()
+        if recorder is not None:
+            recorder.event(data.time, "reset")
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
@@ -352,17 +386,45 @@ def main():
                 M_total_world += R @ M_body
 
                 # Spawn casings + bullets
+                muzzle_world = state['pos'] + R @ (
+                    np.asarray(weapon.mount_offset_m, float)
+                    + np.asarray(weapon.fire_dir_body, float) * 0.30)
                 if casings is not None:
                     casings.eject(n_shots, state['pos'], R, state['vel'],
                                   speed_sigma=DIST.casing_eject_speed_sigma,
                                   angle_sigma_deg=DIST.casing_eject_angle_sigma_deg)
                 if bullets is not None:
-                    muzzle_world = state['pos'] + R @ (
-                        np.asarray(weapon.mount_offset_m, float)
-                        + np.asarray(weapon.fire_dir_body, float) * 0.30)
                     for _ in range(n_shots):
                         v_world = state['vel'] + R @ (weapon.muzzle_vel_mps * fire_dir)
                         bullets.spawn(muzzle_world, v_world)
+
+                # Ray-cast hit detection on targets. Each shot fires
+                # `pellets_per_shot` rays (1 for rifles/SMGs, 9 for the AA-12)
+                # and each ray gets independent angular jitter.
+                if target_field is not None:
+                    fire_dir_world = R @ fire_dir
+                    for _ in range(n_shots):
+                        hits = target_field.cast_shot(
+                            muzzle_world, fire_dir_world,
+                            n_pellets=weapon.pellets_per_shot,
+                            spread_deg=weapon.pellet_spread_deg,
+                            rng=rng)
+                        for t, hp in hits:
+                            print(f"[hit] target_{t.id} at "
+                                  f"({hp[0]:+.2f}, {hp[1]:+.2f}, {hp[2]:+.2f}) "
+                                  f"[{t.hits}/{t.max_hits}]")
+                            if recorder is not None:
+                                recorder.event(data.time, "target_hit",
+                                               target_id=t.id, hit_pos=hp,
+                                               hits=t.hits)
+
+                # Log the shot itself
+                if recorder is not None:
+                    recorder.event(data.time, "shot",
+                                   n_shots=n_shots,
+                                   muzzle_pos=muzzle_world,
+                                   fire_dir_world=(R @ fire_dir).tolist(),
+                                   impulse_total=J_total)
 
             data.xfrc_applied[drone_body_id, 0:3] = F_total_world
             data.xfrc_applied[drone_body_id, 3:6] = M_total_world
@@ -372,11 +434,24 @@ def main():
             # ---- Projectile bookkeeping (after physics step) ----
             if casings is not None:
                 casings.step(SIM.timestep)
-                casings.check_prop_hits()
+                n_prop_hits = casings.check_prop_hits()
+                if n_prop_hits > 0 and recorder is not None:
+                    recorder.event(data.time, "prop_hit", n=n_prop_hits)
             if bullets is not None:
                 bullets.step(SIM.timestep)
                 viewer.user_scn.ngeom = 0
                 bullets.render(viewer.user_scn)
+
+            # ---- Trajectory record ----
+            if recorder is not None:
+                recorder.record(
+                    data.time, data,
+                    pos_des=sp['pos_des'],
+                    yaw_des=sp['yaw_des'],
+                    wind=wind_vec,
+                    ammo=weapon.ammo,
+                    xfrc_drone=data.xfrc_applied[drone_body_id, :].copy(),
+                )
 
             viewer.sync()
 
@@ -384,6 +459,23 @@ def main():
                 slack = SIM.timestep - (time.time() - t_step_start)
                 if slack > 0:
                     time.sleep(slack)
+
+    # ---- Persist the run when the viewer closes ----
+    if recorder is not None:
+        metadata = {
+            "model_xml": model_xml_str,
+            "gun_name": args.gun,
+            "cli_args": {k: v for k, v in vars(args).items()
+                         if isinstance(v, (int, float, str, bool, list, tuple, type(None)))},
+            "config": {
+                "DRONE": asdict(DRONE),
+                "CTRL": asdict(CTRL),
+                "SIM": asdict(SIM),
+                "DIST": asdict(DIST),
+                "PROJ": asdict(PROJ),
+            },
+        }
+        recorder.save(metadata)
 
 
 if __name__ == '__main__':

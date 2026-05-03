@@ -53,8 +53,13 @@ numpad keys are unbound, so they don't fight the viewer.
 | [controller.py](controller.py)    | Cascaded position+attitude PID + the rotor mixer.            |
 | [modes.py](modes.py)              | Setpoint generators: keyboard pilot, autonomous waypoint loop.|
 | [disturbances.py](disturbances.py)| Wind (Ornstein-Uhlenbeck gusts), aero drag, per-shot recoil noise.|
-| [projectiles.py](projectiles.py)  | Optional bullet + casing physics. Casing pool, bullet ballistics, prop-hit detection.|
-| [main.py](main.py)                | Builds the MuJoCo XML from config, runs the sim+control+gun+projectile loop.|
+| [bullets.py](bullets.py)          | Optional bullet ballistics + tracer rendering (Python-side, ray-cast hits in `targets.py`).|
+| [casings.py](casings.py)          | Optional spent-casing MuJoCo physics + propeller-impact detection.|
+| [targets.py](targets.py)          | Targets, ray-cast hit detection, multi-pellet shotgun spread, yaw-aim helper.|
+| [logger.py](logger.py)            | `TrajectoryRecorder` writes runs to `.npz` for replay/analysis.|
+| [replay.py](replay.py)            | Standalone tool to play back a recorded `.npz`.|
+| [drone_env.py](drone_env.py)      | Gymnasium-compatible RL environment. See §14.|
+| [main.py](main.py)                | Builds the MuJoCo XML from config, runs the sim+control+gun loop.|
 
 ---
 
@@ -464,7 +469,337 @@ cases land on the front-right rotor in the first few seconds.
 
 ---
 
-## 12. Sources
+## 12. Targets and aiming (`--targets N`)
+
+Off by default. `--targets N` spawns `N` colored sphere targets in a ring
+around the origin (radius and height are also configurable). Each target
+has a hit counter and fades from white toward red as it accumulates damage.
+
+### Hit detection — ray casting, not collisions
+
+Bullets travel at 360–940 m/s. With our 2 ms timestep that's 0.7–1.9 m of
+travel per step, which would tunnel through any target geom of reasonable
+size. Even MuJoCo's continuous collision detection breaks down at those
+speeds. So target hits are detected differently from casing-vs-prop hits:
+
+For every **shot fired**, we cast `pellets_per_shot` rays from the muzzle
+along the firing direction using `mujoco.mj_ray`. Each ray gets independent
+angular jitter (Gaussian, std-dev `pellet_spread_deg`) to model bullet
+dispersion. The first geom each ray hits is checked against the target
+list; if it matches, the target's hit count is incremented and its color
+fades toward red.
+
+This is **more accurate than letting bullets collide**, not less: at
+realistic engagement ranges of 5–50 m, a bullet remains within ~95 % of its
+muzzle velocity, so the trajectory is nearly straight and arrives in
+microseconds. A straight ray cast at the moment of firing matches reality
+to better than a centimeter.
+
+### Multi-pellet shotgun
+
+The AA-12 fires nine 8.4 mm 00-buckshot pellets per round, with a real-world
+spread of ~30 cm at 25 m. We model this with `pellets_per_shot=9` and
+`pellet_spread_deg=1.5`. All other guns are single-projectile
+(`pellets_per_shot=1`). Hits register independently per pellet — a perfect
+shot at close range can put all 9 hits on one target.
+
+### Aiming — what's possible and what isn't
+
+A free-flying quadrotor can only thrust along its own +z axis, so the
+**airframe IS the gimbal** — to point the gun anywhere, you tilt the whole
+drone. Two cases differ fundamentally:
+
+* **Yaw aim is "free."** Rotating the body about the vertical axis doesn't
+  redirect thrust. The drone can yaw to face any direction without
+  affecting hover. This is implemented as `--aim-yaw`: the autonomous-mode
+  setpoint generator overrides its waypoint yaw to point at the nearest
+  target.
+
+* **Pitch aim is NOT free.** Tilting the drone redirects thrust into a
+  horizontal component, so the drone immediately starts to accelerate
+  sideways. There's no equilibrium where the drone hovers stationary at
+  a non-zero pitch — that would require a horizontal force balancing the
+  redirected thrust, and a free-flying drone has no such force. (Recoil
+  *is* such a force, which is why the drone settles at ~46° leaning into
+  an M249's recoil — the recoil and the redirected-thrust horizontal
+  component cancel out.)
+
+Two real-world workarounds for vertical aim, neither implemented here but
+both natural extensions:
+
+1. **Lean-and-shoot**: drone briefly tilts to aim, fires a short burst,
+   then re-stabilizes. The drone drifts during the lean — accept it as a
+   tactical trade-off. Implementing this means injecting an additional
+   `pitch_offset` term that's added to the position controller's
+   `pitch_des`. The drone will track the offset until the position
+   integrator builds up an opposing demand.
+
+2. **Gimbaled mount**: a separate ball joint between drone and gun, with
+   its own actuators. The drone hovers level; the gun pivots independently.
+   This is what military quadcopter platforms use. Implementing it means
+   adding a 2-DOF body chain in the XML (pan + tilt joints), two more
+   actuators, and a separate gimbal controller. Roughly 50 extra lines.
+
+### Quick demo
+
+```
+# 5 targets in a ring; M4 carbine; drone yaws to face nearest:
+python main.py --gun m4_carbine --targets 5 --aim-yaw --mode auto
+
+# 8 targets at custom radius/height; AA-12 with shotgun spread:
+python main.py --gun aa12_shotgun --targets 8 --target-radius 6 \
+               --target-height 2.0 --aim-yaw --mode auto
+
+# Plus full disturbances + projectiles + reproducible seed:
+python main.py --gun pkm --targets 5 --aim-yaw --projectiles \
+               --seed 42 --recoil-noise 0.04 --wind 4 0 0 --gust 1.0
+```
+
+Each ray-cast hit prints to the console:
+
+```
+[hit] target_0 at (+3.97, +0.21, +1.48) [3/10]
+```
+
+---
+
+## 13. Recording, replay, and analysis
+
+A run can be saved to a single `.npz` and replayed or analyzed later.
+
+```
+python main.py --gun m4_carbine --targets 5 --aim-yaw --mode auto \
+               --record flight.npz
+
+python replay.py flight.npz             # real-time playback
+python replay.py flight.npz --speed 0.25 # quarter-speed slow-mo
+```
+
+### File layout
+
+One `numpy.savez_compressed` archive contains:
+
+| key            | shape         | what's in it                                    |
+|----------------|---------------|-------------------------------------------------|
+| `t`            | (N,)          | sim time per frame                              |
+| `qpos`         | (N, model.nq) | full pose vector (drone + casings + targets)    |
+| `qvel`         | (N, model.nv) | full velocity vector                            |
+| `ctrl`         | (N, 4)        | per-rotor thrust commands                       |
+| `pos_des`      | (N, 3)        | position setpoint (controller input)            |
+| `yaw_des`      | (N,)          | yaw setpoint                                    |
+| `wind`         | (N, 3)        | world-frame wind vector                         |
+| `ammo`         | (N,)          | rounds remaining                                |
+| `xfrc_drone`   | (N, 6)        | recoil + drag wrench applied to drone           |
+| `events`       | scalar str    | JSON-encoded list of dicts (shots, hits, resets)|
+| `metadata`     | scalar str    | JSON-encoded run metadata                       |
+
+`metadata` includes the **full MuJoCo XML string**, the gun name, the CLI
+arguments, and the entire config (DRONE / CTRL / SIM / DIST / PROJ
+dataclasses). The XML is what lets `replay.py` reconstruct the exact same
+scene with no reference back to the simulator code.
+
+### Why `qpos`/`qvel` instead of just position?
+
+- `qpos`/`qvel` is *exactly* what MuJoCo wants for kinematic playback.
+  Replay sets these and calls `mj_forward` — no physics, no controller,
+  no integration error. The viewer renders pixel-identical to the live run.
+- Casings are part of `qpos` (they're real free-joint bodies), so they
+  appear in replay automatically.
+- Bullets aren't (they were tracked in Python during the live run), so
+  they don't appear in replay — but each bullet's `shot` event is logged.
+
+### Analysis with NumPy / pandas / matplotlib
+
+```python
+import numpy as np, json, matplotlib.pyplot as plt
+from logger import load_trajectory
+
+arrays, meta, events = load_trajectory("flight.npz")
+t   = arrays["t"]
+pos = arrays["qpos"][:, 0:3]              # drone XYZ
+quat = arrays["qpos"][:, 3:7]
+ctrl = arrays["ctrl"]                     # per-rotor thrust
+
+# 1. position vs time
+plt.figure(); plt.plot(t, pos); plt.legend(["x", "y", "z"])
+plt.xlabel("t [s]"); plt.ylabel("position [m]"); plt.show()
+
+# 2. rotor thrust (where you'd see the controller pumping per-rotor
+#    differential thrust to fight a per-shot recoil torque)
+plt.figure(); plt.plot(t, ctrl); plt.legend(["m1","m2","m3","m4"])
+plt.xlabel("t [s]"); plt.ylabel("thrust [N]"); plt.show()
+
+# 3. event analysis
+shots = [e for e in events if e["kind"] == "shot"]
+hits  = [e for e in events if e["kind"] == "target_hit"]
+print(f"{len(shots)} trigger pulls, {len(hits)} target hits "
+      f"({100*len(hits)/max(1,len(shots)):.1f}% hit rate)")
+
+# 4. per-target damage
+from collections import Counter
+by_target = Counter(e["target_id"] for e in hits)
+for tid, n in sorted(by_target.items()):
+    print(f"  target_{tid}: {n} hits")
+```
+
+### Decimation
+
+Recording at the full 500 Hz physics rate is wasteful — almost nothing
+relevant changes that fast. Default `--record-decimation 5` saves every 5th
+step (100 Hz log), giving:
+
+* ~70 KB per second of flight (compressed) for a 5-target scenario
+* ~10–20 MB per minute with the full 60-casing pool active
+
+To go denser (eg. for a paper-quality plot of a single recoil pulse):
+`--record-decimation 1` — full sim rate. To go sparser (eg. logging
+overnight): `--record-decimation 25` for 20 Hz.
+
+### Tips
+
+- The recorder writes only when the viewer closes (Esc) or the process
+  exits cleanly. If you `Ctrl+C` mid-run nothing is saved. To checkpoint,
+  call `recorder.save()` from your own hook on a timer.
+- `np.savez_compressed` uses zip + deflate; trajectories compress 3–5×
+  because adjacent frames are very similar.
+- For *very* long runs you'd want streaming (HDF5 or parquet). For the
+  ~minute-scale experiments this sim does, `.npz` is the sweet spot.
+
+---
+
+## 14. Gymnasium environment (`drone_env.DroneEnv`)
+
+The simulator is wrapped in a standard `gymnasium.Env` for use with RL
+libraries (Stable-Baselines3, RLlib, CleanRL, etc.). Install Gymnasium:
+
+```
+pip install gymnasium
+```
+
+Quick example:
+
+```python
+from drone_env import DroneEnv
+
+env = DroneEnv(
+    gun="m4_carbine",
+    n_targets=5,
+    target_radius=5.0,
+    wind_mean=(3.0, 0.0, 0.0),
+    wind_gust_sigma=1.0,
+    recoil_noise=0.04,
+    recoil_angle_noise_deg=1.0,
+    seed=42,
+)
+
+obs, info = env.reset()
+for _ in range(500):
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        obs, info = env.reset()
+env.close()
+```
+
+### Action space
+
+5-dim continuous Box in [-1, 1]. The interpretation depends on
+`control_level`:
+
+| `control_level="setpoint"` (default) | `control_level="thrust"`             |
+|--------------------------------------|--------------------------------------|
+| `[x_des, y_des, z_des, yaw_des, fire]` | `[T1, T2, T3, T4, fire]`           |
+| Position scaled to ±`action_pos_range_m` (default 5 m); yaw to ±π. The on-board cascaded PID flies the drone for you. | Each thrust mapped to [0, max_thrust_per_rotor]. Direct attitude control — must learn to hover. |
+
+`fire > 0` means the trigger is held this step.
+
+### Observation space
+
+A flat float32 vector (length depends on `n_targets`):
+
+```
+pos              (3)    drone XYZ in world frame
+quat             (4)    drone orientation (w, x, y, z)
+vel              (3)    world-frame linear velocity
+omega_body       (3)    body-frame angular velocity
+ammo_normalized  (1)    rounds remaining / capacity
+wind             (3)    current world-frame wind (mean + gust)
+target_rel       (3)    nearest-target position relative to drone
+target_hits      (N)    hit count per target
+```
+
+### Default reward
+
+```
+r =  10 * new_hits_this_step
+   - 0.05 * shots_fired_this_step
+   - 0.01 * |distance to nearest target|
+   - 0.05 * (roll^2 + pitch^2)
+   - 100  if the drone crashes
+```
+
+Override `compute_reward(info)` in a subclass to do something else (sparse
+rewards, hover-only task, etc.).
+
+### Termination / truncation
+
+* **Terminated** when the drone crashes (z < 0.1 m), flips (|roll| or
+  |pitch| > 90°), or leaves the ±30 m horizontal arena.
+* **Truncated** when `step_count >= max_episode_steps` (default 500).
+
+Each `env.step()` advances `frame_skip` physics substeps (default 10),
+giving a 50 Hz control rate on top of the 500 Hz physics — the standard
+SB3-friendly setting.
+
+### Reproducibility
+
+Pass `seed=` to either the constructor or `env.reset()`. Every random
+draw — wind gusts, recoil noise, casing ejection, pellet spread, ray
+jitter — is pulled from a single seeded `numpy.random.Generator`. Same
+seed + same kwargs = bit-for-bit identical observations across runs
+(verified at 1e-9 precision in the smoke test).
+
+### Settings cheat sheet
+
+```python
+DroneEnv(
+    # weapon catalog (see --list-guns or gun.py)
+    gun                     = "m4_carbine",
+
+    # target field
+    n_targets               = 5,
+    target_radius           = 5.0,
+    target_height           = 1.5,
+
+    # disturbances (set sigmas to 0 to disable)
+    wind_mean               = (0.0, 0.0, 0.0),
+    wind_gust_sigma         = 0.0,
+    recoil_noise            = 0.0,       # fractional impulse jitter
+    recoil_angle_noise_deg  = 0.0,
+
+    # control mode
+    control_level           = "setpoint",   # or "thrust"
+    action_pos_range_m      = 5.0,
+
+    # optional projectile layers
+    casings_enabled         = False,
+    bullets_enabled         = False,
+
+    # episode
+    max_episode_steps       = 500,
+    frame_skip              = 10,           # 50 Hz control on 500 Hz sim
+
+    # presentation
+    render_mode             = None,         # or "human" for live MuJoCo viewer
+
+    # reproducibility
+    seed                    = None,
+)
+```
+
+---
+
+## 15. Sources
 
 * Mellinger & Kumar, *Minimum snap trajectory generation and control for
   quadrotors*, ICRA 2011 — the canonical cascaded controller derivation.

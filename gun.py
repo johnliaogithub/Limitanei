@@ -64,6 +64,10 @@ class Gun:
     eject_dir_body:        Tuple[float, float, float] = (0.2, -1.0, 0.4)  # mostly to the right (-y), tilted slightly fwd & up
     eject_speed_mps:       float = 4.0            # mean ejection speed, rifle-typical
 
+    # ---------- per-shot ballistic pellets (1 for rifles/SMGs, 9 for 00-buck) ----------
+    pellets_per_shot:      int = 1
+    pellet_spread_deg:     float = 0.1            # angular std-dev of each pellet from boresight
+
     # ---------- runtime state ----------
     ammo:                  int = field(init=False)
     _fire_accum:           float = field(init=False, default=0.0)
@@ -207,6 +211,8 @@ GUNS = {
         case_diameter_m=0.0185,
         case_length_m=0.070,
         eject_speed_mps=3.0,
+        pellets_per_shot=9,           # 00 buckshot: nine 8.4 mm lead spheres
+        pellet_spread_deg=1.5,        # ~30 cm pattern at 25 m
     ),
     "m249_saw": dict(
         name="M249 SAW (5.56x45 NATO, belt fed)",

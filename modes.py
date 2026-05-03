@@ -190,7 +190,10 @@ class AutonomousSetpoint:
     the recoil disturbance and the controller's correction.
     """
 
-    def __init__(self, sim: SimParams, auto_fire: bool = False):
+    def __init__(self, sim: SimParams, auto_fire: bool = False,
+                 target_field=None, aim_yaw_at_target: bool = False):
+        self.targets = target_field
+        self.aim_yaw = bool(aim_yaw_at_target) and (target_field is not None)
         self.waypoints = [
             (np.array([0.0, 0.0, 1.5]),  0.0),
             (np.array([3.0, 0.0, 1.5]),  0.0),
@@ -226,6 +229,16 @@ class AutonomousSetpoint:
         else:
             pos = nxt_pos
             yaw = nxt_yaw
+
+        # Override yaw to point at the nearest target. Yawing doesn't disturb
+        # hover (rotation about body z doesn't redirect thrust) so this is the
+        # one aim axis we can use without sacrificing position-keeping.
+        if self.aim_yaw:
+            from targets import yaw_to_aim
+            t = self.targets.nearest(pos)
+            if t is not None:
+                yaw = yaw_to_aim(pos, t.pos)
+
         return {'pos_des': pos.copy(), 'yaw_des': float(yaw)}
 
     def is_firing(self):
