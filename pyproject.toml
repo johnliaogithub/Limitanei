@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone_sim"
+version = "0.1.0"
+description = "MuJoCo quadrotor + machine-gun simulation, controller, and Gymnasium envs."
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "mujoco",
+    "numpy",
+    "gymnasium",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+keyboard = ["pynput"]
+
+[project.scripts]
+drone-sim = "drone_sim.sim:main"
+drone-replay = "drone_sim.io.replay:main"
+drone-pid-agent = "drone_sim.rl.agents.pid:main"
+
+[tool.setuptools.packages.find]
+include = ["drone_sim*"]

@@ -32,7 +32,7 @@ except ImportError:
     HAS_PYNPUT = False
     kb = None
 
-from config import ControlParams, SimParams
+from drone_sim.config import ControlParams, SimParams
 
 
 # ============================================================================

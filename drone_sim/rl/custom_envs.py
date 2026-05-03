@@ -1,8 +1,8 @@
-import drone_env as drone_module
 import numpy as np
 
-from controller import quat_to_euler
-from main import get_state, quat_to_rot
+from drone_sim.rl import env as drone_module
+from drone_sim.control.controller import quat_to_euler
+from drone_sim.sim import get_state, quat_to_rot
 
 class SimpleRewardEnv(drone_module.DroneEnv): 
     """

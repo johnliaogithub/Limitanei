@@ -21,7 +21,7 @@ Pipeline
 """
 import numpy as np
 
-from config import DroneParams, ControlParams
+from drone_sim.config import DroneParams, ControlParams
 
 
 # ---------- small math helpers ----------

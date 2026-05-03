@@ -3,7 +3,7 @@
 Quick usage
 -----------
 
-    from drone_env import DroneEnv
+    from drone_sim import DroneEnv     # or: from drone_sim.rl.env import DroneEnv
 
     env = DroneEnv(
         gun="m4_carbine",
@@ -88,17 +88,17 @@ import mujoco
 import gymnasium as gym
 from gymnasium import spaces
 
-from config import DRONE, CTRL, SIM, DIST, PROJ
-from controller import CascadedController, quat_to_euler
-import gun as gun_module
-import disturbances as dst
-import targets as tgt
-import bullets as bul
-import casings as cas
+from drone_sim.config import DRONE, CTRL, SIM, DIST, PROJ
+from drone_sim.control.controller import CascadedController, quat_to_euler
+from drone_sim.physics import gun as gun_module
+from drone_sim.physics import disturbances as dst
+from drone_sim.physics import targets as tgt
+from drone_sim.physics import bullets as bul
+from drone_sim.physics import casings as cas
 
-# Re-use main.py's model-building helpers (importing main does NOT auto-run
+# Re-use sim.py's model-building helpers (importing it does NOT auto-run
 # anything thanks to the `if __name__ == '__main__'` guard there).
-from main import build_xml, compute_loadout, get_state, reset_sim, quat_to_rot
+from drone_sim.sim import build_xml, compute_loadout, get_state, reset_sim, quat_to_rot
 
 
 class DroneEnv(gym.Env):
