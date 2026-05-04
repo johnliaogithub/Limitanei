@@ -1,0 +1,7 @@
+mujoco
+numpy
+gymnasium
+matplotlib
+
+[keyboard]
+pynput

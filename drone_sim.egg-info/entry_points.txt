@@ -1,0 +1,4 @@
+[console_scripts]
+drone-pid-agent = drone_sim.rl.agents.pid:main
+drone-replay = drone_sim.io.replay:main
+drone-sim = drone_sim.sim:main

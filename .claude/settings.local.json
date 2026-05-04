@@ -9,7 +9,10 @@
       "PowerShell(& \"C:\\\\Users\\\\johnl\\\\Desktop\\\\PhysicsSimulation\\\\env\\\\bin\\\\python.exe\" -c \"import sys; print\\(sys.version\\); import mujoco; print\\('mujoco', mujoco.__version__\\); import numpy; print\\('numpy', numpy.__version__\\)\")",
       "Bash(wsl -d Ubuntu -- /mnt/c/Users/johnl/Desktop/PhysicsSimulation/env/bin/python -c \"import sys; print\\(sys.version\\); import mujoco; print\\('mujoco', mujoco.__version__\\); import numpy; print\\('numpy', numpy.__version__\\)\")",
       "PowerShell(wsl -- /mnt/c/Users/johnl/Desktop/PhysicsSimulation/env/bin/python -c \"import sys; print\\(sys.version\\); import mujoco; print\\('mujoco', mujoco.__version__\\); import numpy; print\\('numpy', numpy.__version__\\)\")",
-      "Bash(wsl -- /mnt/c/Users/johnl/Desktop/PhysicsSimulation/env/bin/python -c \"import mujoco, pynput; print\\('mujoco', mujoco.__version__\\)\")"
+      "Bash(wsl -- /mnt/c/Users/johnl/Desktop/PhysicsSimulation/env/bin/python -c \"import mujoco, pynput; print\\('mujoco', mujoco.__version__\\)\")",
+      "Bash(.venv/bin/jupyter kernelspec *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(python3 -c \"import drone_sim; print\\(drone_sim.__file__\\)\")"
     ]
   }
 }
