@@ -1,22 +1,6 @@
-# Drone + Machine-Gun Recoil Simulation
+# MuJoCo Drone Simulation
 
-A 6-DOF MuJoCo simulation of an X-frame quadrotor flown by a cascaded PID
-controller, carrying one of several mountable machine guns. The point of
-the experiment is to study **how recoil disturbs flight** and how well the
-flight controller can compensate.
-
-```
-   .                       (rotor)               .
-    \                                           /
-     \  rotor             [drone body]    rotor /
-      \____________  ------|----|------  _____/
-                     |     |    |     |
-                     |     +----+     |
-                     |       v        |   <-- gun (mounted under nose)
-                     +================+
-                                       >>>>>>  bullet
-                                <----  recoil F
-```
+A continuous-action Reinforcement Learning environment built in MuJoCo. This project trains a PPO agent to maintain spatial stabilization of a quadcopter against high-frequency, asymmetric kinetic impulses (recoil simulation). The point of the experiment is to study how recoil disturbs flight and how well the flight controller can compensate.
 
 ## Run it
 
