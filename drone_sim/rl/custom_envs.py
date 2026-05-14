@@ -1,58 +1,134 @@
 import numpy as np
+from gymnasium import spaces
 
 from drone_sim.rl import env as drone_module
 from drone_sim.control.controller import quat_to_euler
 from drone_sim.sim import get_state, quat_to_rot
+from drone_sim.config import SIM
 
-class SimpleRewardEnv(drone_module.DroneEnv): 
-    """
-    Single target environment with M249 drone
 
-    Initialized 100 meters from target
+# Default reward coefficients — override any subset via reward_cfg={...}
+_ZERO_DEFAULTS = dict(
+    uprightness = 1.0,    # cos(roll)*cos(pitch) bonus for being level
+    omega       = 0.1,    # penalty on squared angular velocity magnitude
+    altitude    = 0.05,   # penalty on squared altitude deviation from spawn
+    crash       = 100.0,  # one-time penalty on crash
+)
 
-    Environment with dense reward: 
-     - hit target
-     - stable: penalize drone sideways rotation above 10 degrees
-     - distance between line and target center = norm of perpendicular of the target vector onto the gun direction
+_SINGLE_DEFAULTS = dict(
+    hit         = 30.0,   # reward per bullet hit
+    aim         = 0.3,    # always-on cosine aiming reward (max per step)
+    miss_dist   = 0.05,   # numerator of 1/miss_distance shot-shaping bonus
+    ammo        = 0.005,  # penalty per shot fired
+    stability   = 0.01,   # coefficient on roll² + 0.5*pitch_excess²
+    crash       = 75.0,   # one-time penalty on crash
+)
+
+
+class ZeroTargetEnv(drone_module.DroneEnv):
+    """Stabilisation-only environment (no target).
+
+    Dense reward: stay upright, maintain altitude, avoid spinning.
+
+    reward_cfg keys (all optional, merged with defaults):
+        uprightness, omega, altitude, crash
     """
 
     EPS = 1e-7
 
-    def __init__(self, **kwargs):
+    def __init__(self, reward_cfg: dict | None = None, **kwargs):
+        kwargs.setdefault("n_targets", 0)
+        super().__init__(**kwargs)
+        cfg = dict(_ZERO_DEFAULTS)
+        if reward_cfg:
+            cfg.update(reward_cfg)
+        self._rc = cfg
+
+    def _get_obs(self):
+        return super()._get_obs()
+
+    def compute_reward(self, _info) -> float:
+        r = 0.0
+        rc = self._rc
+
+        state = get_state(self.data)
+        roll, pitch, _ = quat_to_euler(state["quat"])
+        omega = state["omega_body"]
+
+        r += rc["uprightness"] * np.cos(roll) * np.cos(pitch)
+        r -= rc["omega"]       * float(np.dot(omega, omega))
+        r -= rc["altitude"]    * (state["pos"][2] - SIM.init_pos[2]) ** 2
+
+        if self._is_crashed():
+            r -= rc["crash"]
+
+        return float(r)
+
+
+class SingleTargetEnv(drone_module.DroneEnv):
+    """Single-target shooting environment.
+
+    Dense reward: aim at target, fire, hit, stay stable.
+
+    reward_cfg keys (all optional, merged with defaults):
+        hit        — reward per bullet hit
+        aim        — always-on cosine aiming bonus (max per step)
+        miss_dist  — shot-shaping numerator: clip(miss_dist / d_perp, 0, 1)
+        ammo       — penalty per shot fired
+        stability  — coefficient on roll² + 0.5*pitch_excess²
+        crash      — one-time crash penalty
+    """
+
+    EPS = 1e-7
+
+    def __init__(self, reward_cfg: dict | None = None, **kwargs):
         kwargs.setdefault("n_targets", 1)
+        kwargs.setdefault("gun", "m249_saw")
         kwargs.setdefault("target_radius", 100.0)
         kwargs.setdefault("target_height", 1.5)
         kwargs.setdefault("action_pos_range_m", 110.0)
         super().__init__(**kwargs)
+        cfg = dict(_SINGLE_DEFAULTS)
+        if reward_cfg:
+            cfg.update(reward_cfg)
+        self._rc = cfg
 
-    def compute_reward(self, info) -> float: 
+    def compute_reward(self, info) -> float:
         r = 0.0
-        r += 10.0 * info["hits"]
-        r -= 0.05 * info["shots_fired"]
+        rc = self._rc
+
+        r += rc["hit"] * info["hits"]
 
         state = get_state(self.data)
+        R = quat_to_rot(state["quat"])
+        gun_dir_world = R @ np.asarray(self.weapon.fire_dir_body, float)
+        target_loc = self.target_field.targets[0].pos
+        v_to_target = target_loc - state["pos"]
+        dist = float(np.linalg.norm(v_to_target))
 
-        if info["shots_fired"] > 0: 
-            # find distance between gun direction and target
-            R = quat_to_rot(state["quat"])
-            gun_dir_world = R @ np.asarray(self.weapon.fire_dir_body, float)
+        # Always-on angular aiming reward: 1.0 when gun points exactly at
+        # target, 0 when perpendicular. Provides dense gradient even before
+        # the policy learns to fire, preventing "never shoot" local optima.
+        if dist > 0.5:
+            cos_angle = float(np.dot(gun_dir_world, v_to_target / dist))
+            r += rc["aim"] * np.clip(cos_angle, 0.0, 1.0)
+
+        if info["shots_fired"] > 0:
             muzzle_world = state["pos"] + R @ (
                 np.asarray(self.weapon.mount_offset_m, float)
-                + np.asarray(self.weapon.fire_dir_body, float) * 0.30   # barrel length
+                + np.asarray(self.weapon.fire_dir_body, float) * 0.30
             )
-            target_loc = self.target_field.targets[0].pos
             v = target_loc - muzzle_world
-            perp = v - np.dot(v, gun_dir_world) * gun_dir_world          # gun_dir_world is unit
+            perp = v - np.dot(v, gun_dir_world) * gun_dir_world
             miss_distance = float(np.linalg.norm(perp))
+            r += np.clip(rc["miss_dist"] / (miss_distance + self.EPS), 0.0, 1.0)
+            r -= rc["ammo"] * info["shots_fired"]
 
-            r += np.clip(0.05 / (miss_distance + self.EPS), 0, 1)  # less than or equal to 10 centimeters away from the target center is reward of 1
-
-        # penalize instability on the roll axis (pitch and yaw are relatively unimportant, since roll seems to destabilize the drone more in PID)
         roll, pitch, _ = quat_to_euler(state["quat"])
-        pitch_excess = max(0.0, abs(pitch) - np.pi / 3)   # zero up to 60°, then linear. 60% is fine because the drone may need to aim downwards
-        r -= 0.05 * (roll**2 + 0.5 * pitch_excess**2)
+        pitch_excess = max(0.0, abs(pitch) - np.pi / 3)
+        r -= rc["stability"] * (roll ** 2 + 0.5 * pitch_excess ** 2)
 
         if self._is_crashed():
-            r -= 100.0
+            r -= rc["crash"]
 
         return float(r)

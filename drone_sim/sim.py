@@ -274,7 +274,10 @@ def main():
     thrust_actual = np.full(4, hover_thrust)
 
     ctrl_period = 1.0 / SIM.control_hz
-    last_ctrl_t = -1.0
+    last_ctrl_t  = -1.0
+    shots_total  = 0
+    hits_total_sim = 0
+    last_stats_t = -1.0
 
     # ---- Trajectory recorder (optional) ----
     recorder = None
@@ -305,7 +308,7 @@ def main():
     print("[main] " + "=" * 60)
 
     def do_reset():
-        nonlocal last_ctrl_t
+        nonlocal last_ctrl_t, shots_total, hits_total_sim, last_stats_t
         reset_sim(model, data)
         controller.reset()
         setpoint_gen.reset()
@@ -314,6 +317,9 @@ def main():
         thrust_actual[:] = hover_thrust
         data.xfrc_applied[drone_body_id, :] = 0.0
         last_ctrl_t = -1.0
+        shots_total = 0
+        hits_total_sim = 0
+        last_stats_t = -1.0
         if casings is not None:
             for i in range(casings.n):
                 casings._park(i)
@@ -365,6 +371,7 @@ def main():
             firing = setpoint_gen.is_firing()
             n_shots = weapon.step(SIM.timestep, firing)
             if n_shots > 0:
+                shots_total += n_shots
                 R = quat_to_rot(state['quat'])
                 # Per-shot impulse with optional Gaussian magnitude noise; the
                 # average over many shots converges to the nominal value, so
@@ -410,9 +417,11 @@ def main():
                             spread_deg=weapon.pellet_spread_deg,
                             rng=rng)
                         for t, hp in hits:
+                            hits_total_sim += 1
                             print(f"[hit] target_{t.id} at "
                                   f"({hp[0]:+.2f}, {hp[1]:+.2f}, {hp[2]:+.2f}) "
-                                  f"[{t.hits}/{t.max_hits}]")
+                                  f"[{t.hits}/{t.max_hits}]  "
+                                  f"total shots={shots_total}  hits={hits_total_sim}")
                             if recorder is not None:
                                 recorder.event(data.time, "target_hit",
                                                target_id=t.id, hit_pos=hp,
@@ -439,8 +448,43 @@ def main():
                     recorder.event(data.time, "prop_hit", n=n_prop_hits)
             if bullets is not None:
                 bullets.step(SIM.timestep)
-                viewer.user_scn.ngeom = 0
+
+            # ---- Custom scene geometry (always rebuilt every frame) ----
+            viewer.user_scn.ngeom = 0
+            if bullets is not None:
                 bullets.render(viewer.user_scn)
+
+            # Aiming line: thin red ray from muzzle tip along gun direction.
+            # Uses get_state after the physics step so the line tracks the
+            # drone's current pose (not the last controller pose).
+            render_state = get_state(data)
+            R_r   = quat_to_rot(render_state['quat'])
+            gdir  = R_r @ np.asarray(weapon.fire_dir_body, float)
+            muz_r = render_state['pos'] + R_r @ (
+                np.asarray(weapon.mount_offset_m, float)
+                + np.asarray(weapon.fire_dir_body, float) * 0.30)
+            if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
+                line_color = (np.array([1.0, 1.0, 0.1, 1.0]) if n_shots > 0
+                              else np.array([1.0, 0.25, 0.25, 0.6]))
+                g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+                mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_LINE,
+                                    np.zeros(3), np.zeros(3), np.zeros(9),
+                                    line_color)
+                mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_LINE, 0.004,
+                                     muz_r, muz_r + gdir * 60.0)
+                viewer.user_scn.ngeom += 1
+
+            # ---- Periodic stats (once per sim-second) ----
+            if data.time >= last_stats_t + 1.0:
+                last_stats_t = data.time
+                roll_s, pitch_s, _ = quat_to_euler(render_state['quat'])
+                firing_str = "FIRING" if n_shots > 0 else "      "
+                print(f"[t={data.time:6.1f}s] {firing_str}  "
+                      f"shots={shots_total:5d}  ammo={weapon.ammo:4d}  "
+                      f"hits={hits_total_sim:3d}  "
+                      f"alt={render_state['pos'][2]:5.2f}m  "
+                      f"roll={np.degrees(roll_s):+5.1f}°  "
+                      f"pitch={np.degrees(pitch_s):+5.1f}°")
 
             # ---- Trajectory record ----
             if recorder is not None:

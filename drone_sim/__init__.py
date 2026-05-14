@@ -4,7 +4,7 @@ Public API — import directly from `drone_sim`:
 
     from drone_sim import DRONE, CTRL, SIM, GUN, DIST, PROJ
     from drone_sim import CascadedController, KeyboardSetpoint, AutonomousSetpoint
-    from drone_sim import DroneEnv, SimpleRewardEnv
+    from drone_sim import DroneEnv, ZeroTargetEnv, SingleTargetEnv
 
 Submodules also exposed by name:
     drone_sim.physics   -- gun, bullets, casings, disturbances, targets
@@ -22,7 +22,7 @@ from drone_sim.control.controller import (
 )
 from drone_sim.control.modes import KeyboardSetpoint, AutonomousSetpoint
 from drone_sim.rl.env import DroneEnv
-from drone_sim.rl.custom_envs import SimpleRewardEnv
+from drone_sim.rl.custom_envs import ZeroTargetEnv, SingleTargetEnv
 
 __all__ = [
     # config singletons + dataclasses
@@ -33,5 +33,5 @@ __all__ = [
     "CascadedController", "quat_to_euler", "wrap_pi",
     "KeyboardSetpoint", "AutonomousSetpoint",
     # gym envs
-    "DroneEnv", "SimpleRewardEnv",
+    "DroneEnv", "ZeroTargetEnv", "SingleTargetEnv",
 ]

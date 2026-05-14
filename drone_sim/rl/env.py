@@ -175,7 +175,8 @@ class DroneEnv(gym.Env):
         # component is always the fire trigger).
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
 
-        obs_dim = 3 + 4 + 3 + 3 + 1 + 3 + 3 + max(self.n_targets, 0)
+        # pos(3) + quat(4) + vel(3) + omega(3) + ammo(1) + target_rel(3) = 17
+        obs_dim = 3 + 4 + 3 + 3 + 1 + 3
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -399,25 +400,28 @@ class DroneEnv(gym.Env):
     # ---------------------------------------------------------------------
     def _get_obs(self) -> np.ndarray:
         state = get_state(self.data)
-        wind_now = (self.wind_model.mean + self.wind_model.gust
-                    if self.wind_model is not None else np.zeros(3))
+        # wind_now = (self.wind_model.mean + self.wind_model.gust
+        #             if self.wind_model is not None else np.zeros(3))
 
         if self.target_field is not None and self.target_field.targets:
             nearest = self.target_field.nearest(state["pos"])
             target_rel = (nearest.pos - state["pos"]) if nearest is not None else np.zeros(3)
-            hits = np.array([t.hits for t in self.target_field.targets], dtype=float)
         else:
             target_rel = np.zeros(3)
-            hits = np.zeros(self.n_targets, dtype=float) if self.n_targets > 0 else np.zeros(0)
 
         ammo_norm = self.weapon.ammo / max(1, self.weapon.capacity_rounds)
+
+        # Normalise target_rel so it stays in roughly [-1, 1].
+        # Raw distance to a 100 m target would be ~100× larger than every other
+        # observation dimension, flooding the network. Dividing by target_radius
+        # (or 1.0 when there is no target) keeps the scale consistent.
+        scale = float(self.target_radius) if self.n_targets > 0 else 1.0
+        target_rel_norm = target_rel / scale
 
         return np.concatenate([
             state["pos"], state["quat"], state["vel"], state["omega_body"],
             np.array([ammo_norm], dtype=float),
-            wind_now,
-            target_rel,
-            hits,
+            target_rel_norm,
         ]).astype(np.float32)
 
     def _info_dict(self, shots, hits) -> dict:

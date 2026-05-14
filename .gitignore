@@ -3,3 +3,4 @@ __pycache__/
 observation.txt
 todo
 .venv/
+*.zip

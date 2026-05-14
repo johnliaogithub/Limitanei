@@ -12,7 +12,9 @@
       "Bash(wsl -- /mnt/c/Users/johnl/Desktop/PhysicsSimulation/env/bin/python -c \"import mujoco, pynput; print\\('mujoco', mujoco.__version__\\)\")",
       "Bash(.venv/bin/jupyter kernelspec *)",
       "Bash(.venv/bin/python *)",
-      "Bash(python3 -c \"import drone_sim; print\\(drone_sim.__file__\\)\")"
+      "Bash(python3 -c \"import drone_sim; print\\(drone_sim.__file__\\)\")",
+      "Bash(python -c \"from drone_sim.rl.custom_envs import ZeroTargetEnv\")",
+      "Bash(python -c \"from drone_sim.rl.custom_envs import ZeroTargetEnv; print\\('OK'\\)\")"
     ]
   }
 }

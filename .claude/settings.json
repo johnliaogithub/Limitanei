@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import json; nb=json.load\\(open\\('experiments/e1_M249_single.ipynb'\\)\\); [print\\(c['source']\\) for c in nb['cells'] if c['cell_type']=='code']\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)"
+    ]
+  }
+}
