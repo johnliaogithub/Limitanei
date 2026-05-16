@@ -1,49 +1,53 @@
-# MuJoCo Drone Simulation
+# MuJoCo Counter-UAS Drone Simulation
 
-A continuous-action Reinforcement Learning environment built in MuJoCo. This project trains a PPO agent to maintain spatial stabilization of a quadcopter against high-frequency, asymmetric kinetic impulses (recoil simulation). The point of the experiment is to study how recoil disturbs flight and how well the flight controller can compensate.
+A physics-accurate Reinforcement Learning environment built in MuJoCo for autonomous counter-drone (Counter-UAS) research. A PPO agent learns to maintain stable flight while carrying a kinetic interceptor payload, compensating for high-frequency asymmetric recoil impulses during engagement. The simulation studies how onboard weapon systems affect quadrotor flight dynamics and whether a learned control policy can compensate in real time.
+
+## Context
+
+Small unmanned aerial systems (UAS) pose an increasing threat to military operations and civil infrastructure. This project models a core challenge of autonomous interceptor drones: hovering stably while delivering kinetic payloads against aerial threat coordinates, despite the destabilising effect of weapon recoil on flight dynamics.
 
 ## Run it
 
 ```
-# Autonomous waypoint demo (drone fires while it dwells at each point):
+# Autonomous intercept demo (drone engages threat coordinates autonomously):
 env/bin/python main.py --mode auto
 
-# Pilot it yourself, with a different weapon:
+# Pilot it yourself with a different payload:
 env/bin/python main.py --mode keyboard --gun pkm
 
-# See all weapons and their stats:
+# See all payload options and their ballistic stats:
 env/bin/python main.py --list-guns
 ```
 
 Keyboard mode uses **the numeric keypad** (NumLock ON) because every letter
 A–Z is bound to a render-flag toggle inside the MuJoCo viewer (W toggles
-wireframe, D toggles SDF, etc.) and there's no way to suppress those. The
-numpad keys are unbound, so they don't fight the viewer.
+wireframe, D toggles SDF, etc.) and there is no way to suppress those. The
+numpad keys are unbound.
 
 ```
         7 yaw-L     8 fwd      9 yaw-R
         4 strafe-L  5 RESET    6 strafe-R
                     2 back
         +  climb               -  descend
-        0  FIRE
+        0  ENGAGE
 ```
 
 ## Files
 
 | File             | Role                                                              |
 |------------------|-------------------------------------------------------------------|
-| [config.py](config.py)            | All adjustable constants (drone, controller, sim, gun, disturbances, projectiles). |
-| [gun.py](gun.py)                  | `Gun` class + a catalog of weapon models. Drop in a new one to add a gun. |
+| [config.py](config.py)            | All adjustable constants (drone, controller, sim, payload, disturbances, projectiles). |
+| [gun.py](gun.py)                  | `Gun` class + a catalog of kinetic payload models.           |
 | [controller.py](controller.py)    | Cascaded position+attitude PID + the rotor mixer.            |
-| [modes.py](modes.py)              | Setpoint generators: keyboard pilot, autonomous waypoint loop.|
+| [modes.py](modes.py)              | Setpoint generators: keyboard pilot, autonomous intercept loop.|
 | [disturbances.py](disturbances.py)| Wind (Ornstein-Uhlenbeck gusts), aero drag, per-shot recoil noise.|
-| [bullets.py](bullets.py)          | Optional bullet ballistics + tracer rendering (Python-side, ray-cast hits in `targets.py`).|
-| [casings.py](casings.py)          | Optional spent-casing MuJoCo physics + propeller-impact detection.|
-| [targets.py](targets.py)          | Targets, ray-cast hit detection, multi-pellet shotgun spread, yaw-aim helper.|
+| [bullets.py](bullets.py)          | Projectile ballistics + tracer rendering (Python-side, ray-cast hits in `targets.py`).|
+| [casings.py](casings.py)          | Spent-casing MuJoCo physics + propeller-impact detection.    |
+| [targets.py](targets.py)          | Aerial threat targets, ray-cast hit detection, multi-pellet spread, yaw-aim helper.|
 | [logger.py](logger.py)            | `TrajectoryRecorder` writes runs to `.npz` for replay/analysis.|
 | [replay.py](replay.py)            | Standalone tool to play back a recorded `.npz`.|
-| [drone_env.py](drone_env.py)      | Gymnasium-compatible RL environment. See §14.|
-| [main.py](main.py)                | Builds the MuJoCo XML from config, runs the sim+control+gun loop.|
+| [drone_env.py](drone_env.py)      | Gymnasium-compatible RL environment.|
+| [main.py](main.py)                | Builds the MuJoCo XML from config, runs the sim+control+payload loop.|
 
 ---
 
@@ -62,13 +66,12 @@ I * dω/dt + ω × (I·ω)  =  Σ τ            (rotation, body frame)
 
 where **m** is total mass, **I** is the inertia tensor, **a** is linear
 acceleration, **ω** is body-frame angular velocity, and the sums are over all
-forces and torques. MuJoCo integrates these for us; our code just supplies
-forces.
+forces and torques. MuJoCo integrates these; our code supplies forces.
 
 The only forces on the drone are:
 1. Four propeller thrusts (along body +z, applied at the rotor positions)
 2. Gravity (along world −z)
-3. Recoil from the mounted gun (along body −fire-direction, at the muzzle)
+3. Recoil from the mounted payload (along body −fire-direction, at the muzzle)
 
 ## 2. Propeller thrust and torque
 
@@ -79,46 +82,39 @@ T_i  =  k_T * ω_i²        (thrust force, N)
 Q_i  =  k_Q * ω_i²        (drag torque on body, N·m, opposite to rotor spin)
 ```
 
-where ω_i is the rotor's angular velocity in rad/s. The drag torque is what
-lets a quadrotor yaw — by spinning two rotors faster than the other two, the
-**net** drag torque around z becomes nonzero. With diagonally paired
-spin directions (CW–CCW–CW–CCW), the net yaw torque is zero at hover,
-which is why the layout works.
+where ω_i is the rotor's angular velocity in rad/s. The drag torque lets a
+quadrotor yaw — by spinning two rotors faster than the other two, the net drag
+torque around z becomes nonzero. With diagonally paired spin directions
+(CW–CCW–CW–CCW), net yaw torque is zero at hover.
 
 For the default loadout (~15-inch prop):
 
-| Constant   | Value     | Units      |
-|------------|-----------|------------|
-| k_T        | 2.5 × 10⁻⁴ | N / (rad/s)² |
-| k_Q        | 5.0 × 10⁻⁶ | N·m / (rad/s)² |
-| ω_max      | 600       | rad/s (~5700 RPM) |
-| T_max/rotor| 90        | N |
-| τ_motor    | 0.05      | s (motor first-order lag) |
-
-The controller in this sim commands **thrust** directly (in newtons) and the
-implicit ω just falls out of the rotor law. Each motor in the MuJoCo XML
-applies `gear="0 0 1 0 0 ±k_Q/k_T"`, meaning: for control input *T*, apply
-force *(0,0,T)* at the rotor site (giving correct thrust + roll/pitch
-moment-arm) plus a yaw torque ±(k_Q/k_T)·T.
+| Constant   | Value      | Units         |
+|------------|------------|---------------|
+| k_T        | 2.5 × 10⁻⁴ | N / (rad/s)²  |
+| k_Q        | 5.0 × 10⁻⁶ | N·m / (rad/s)²|
+| ω_max      | 600        | rad/s (~5700 RPM) |
+| T_max/rotor| 90         | N             |
+| τ_motor    | 0.05       | s (motor first-order lag) |
 
 ## 3. Motor first-order lag
 
-Real motors can't change RPM instantly. We model that as a discrete first-
-order filter at simulator rate:
+Real motors cannot change RPM instantly. We model that as a discrete first-order
+filter at simulator rate:
 
 ```
 T_actual  +=  α * (T_command − T_actual)        with  α = dt / (τ_motor + dt)
 ```
 
 Set `motor_tau = 0` in `config.py` to make the drone unrealistically
-responsive (useful for tuning).
+responsive (useful for gain tuning).
 
 ## 4. The X-frame mixer
 
 Going from a desired wrench `(T_total, τ_x, τ_y, τ_z)` to per-rotor thrust
-commands is just a 4×4 matrix inversion. With rotors at body-frame positions
+commands is a 4×4 matrix inversion. With rotors at body-frame positions
 (±L, ±L, 0) where `L = arm_length / √2`, and alternating spin directions
-`s_i ∈ {+1, −1}` such that diagonally opposite rotors share s:
+`s_i ∈ {+1, −1}`:
 
 ```
     [ 1   1   1   1 ]   [T_1]     [ T_total ]
@@ -132,134 +128,115 @@ precomputed inverse matrix.
 
 ## 5. Cascaded PID
 
-A quadrotor is **underactuated**: 4 rotors → 4 controllable DOFs, but you
-might want to control 6. The trick is that the four chosen DOFs
-`(thrust, τ_x, τ_y, τ_z)` give you direct control of altitude and attitude,
-and *attitude can be used to point thrust horizontally* — so horizontal
-position is reachable but only by tilting first. That's why the controller
-is cascaded:
+A quadrotor is **underactuated**: 4 rotors → 4 controllable DOFs. The trick
+is that `(thrust, τ_x, τ_y, τ_z)` give direct control of altitude and
+attitude, and *attitude can be used to point thrust horizontally* — so
+horizontal position is reachable by tilting. That is why the controller is
+cascaded:
 
 ### Outer loop — position controller
 
 Runs at 250 Hz. PID on world-frame position error:
 
 ```
-a_des  =  K_p_pos * (p_des − p)                      (proportional)
-       +  K_i_pos * ∫(p_des − p) dt                  (integral)
-       +  K_d_pos * (0 − v)                          (derivative — desired velocity is 0)
-       +  g * ẑ                                      (gravity-cancel feedforward)
+a_des  =  K_p_pos * (p_des − p)
+       +  K_i_pos * ∫(p_des − p) dt
+       +  K_d_pos * (0 − v)
+       +  g * ẑ                          (gravity-cancel feedforward)
 ```
 
-The integral term has horizontal components in this build so that a **constant
-disturbance** like sustained recoil is driven out instead of producing a
-permanent offset. The integrator has anti-windup clamping.
+The integral term has horizontal components so that a **constant disturbance**
+like sustained recoil is driven out instead of producing a permanent offset.
+The integrator has anti-windup clamping.
 
-Then it converts the desired world-frame acceleration into a
-`(roll_des, pitch_des, T_total)` triplet using a small-angle decomposition
-in the yaw-aligned frame:
+Then it converts the desired world-frame acceleration into
+`(roll_des, pitch_des, T_total)` using a small-angle decomposition:
 
 ```
-a_b_x  =   cos(ψ)·a_des_x + sin(ψ)·a_des_y          (forward in yaw frame)
-a_b_y  =  -sin(ψ)·a_des_x + cos(ψ)·a_des_y          (left    in yaw frame)
-pitch_des  =  arctan2(a_b_x, a_des_z)               (lean forward = +pitch)
-roll_des   =  arctan2(-a_b_y, a_des_z)              (lean right  = -roll)
+a_b_x  =   cos(ψ)·a_des_x + sin(ψ)·a_des_y
+a_b_y  =  -sin(ψ)·a_des_x + cos(ψ)·a_des_y
+pitch_des  =  arctan2(a_b_x, a_des_z)
+roll_des   =  arctan2(-a_b_y, a_des_z)
 T_total    =  m * a_des_z / (cos(roll) · cos(pitch))
 ```
 
-Tilt angles are clipped to `max_tilt_deg`. This caps the maximum horizontal
-acceleration the drone is willing to demand — important when fighting a big
-recoil force.
+Tilt angles are clipped to `max_tilt_deg`.
 
 ### Inner loop — attitude controller
 
-Runs at the same 250 Hz. PID on Euler-angle error:
+Runs at 250 Hz. PID on Euler-angle error:
 
 ```
 α_des  =  K_p_att * angle_error  +  K_i_att * ∫angle_error  −  K_d_att * ω_body
 τ      =  diag(I_x, I_y, I_z) · α_des
 ```
 
-Two small but important details:
+Two details:
 * **D-term reads angular velocity directly** instead of differentiating an
   angle signal, which would amplify quaternion conversion noise.
 * **Output is angular acceleration**, multiplied by the inertia tensor to
-  produce torque. This makes the closed-loop bandwidth depend on K_p_att
-  alone — *not* on inertia — so the gains transfer between drone sizes.
-  (Motor lag and mixer saturation still impose a practical limit.)
+  produce torque. This makes closed-loop bandwidth depend on K_p_att alone —
+  not on inertia — so gains transfer between drone sizes.
 
-## 6. Recoil — what the gun actually does to the drone
+## 6. Recoil — what the kinetic payload does to the drone
 
-Each shot, the gun expels a bullet (mass `m_b`, velocity `v_b`) and a slug of
-hot propellant gas (mass `m_p`, average velocity ≈ 1.4·v_b). By momentum
-conservation, the gun (and through it, the drone) absorbs an equal and
-opposite impulse:
+Each shot expels a projectile (mass `m_b`, velocity `v_b`) and propellant gas
+(mass `m_p`, average velocity ≈ 1.4·v_b). By momentum conservation the drone
+absorbs an equal and opposite impulse:
 
 ```
 J_per_shot  =  m_b * v_b  +  m_p * (1.4 * v_b)         [N·s]
 ```
 
-For full-auto fire at cyclic rate **R** (rounds per second), the average
-recoil force on the drone is
+For full-auto fire at cyclic rate **R** (rounds per second):
 
 ```
 F_recoil_avg  =  J_per_shot * R                         [N]
 ```
 
-For each cartridge in the catalog:
+Payload catalog (mass / cyclic rate / capacity / average recoil force):
 
-| Cartridge       | m_b (g) | v_b (m/s) | m_p (g) | J/shot (N·s) |
-|-----------------|---------|-----------|---------|--------------|
-| 9×19 Parabellum | 8.0     | 360       | 0.40    | 3.08         |
-| 5.56×45 NATO    | 4.0     | 940       | 1.70    | 5.99         |
-| 7.62×39 (AK)    | 7.9     | 715       | 1.60    | 7.25         |
-| 7.62×51 NATO    | 9.5     | 850       | 3.00    | 11.65        |
-| 7.62×54R (PKM)  | 9.6     | 825       | 3.10    | 11.50        |
-
-And the catalog of weapons (mass / cyclic rate / capacity / avg recoil):
-
-| Gun        | Cartridge   | Mass | Rate    | Capacity | F_avg  |
-|------------|-------------|------|---------|----------|--------|
-| Glock 18   | 9×19        | 0.66 kg | 1200 RPM | 33   | 62 N   |
-| M4         | 5.56 NATO   | 3.4 kg  | 800 RPM  | 30   | 80 N   |
-| AKM        | 7.62×39     | 3.3 kg  | 600 RPM  | 30   | 73 N   |
-| M249 SAW   | 5.56 NATO   | 7.5 kg  | 800 RPM  | 200  | 80 N   |
-| PKM        | 7.62×54R    | 7.5 kg  | 650 RPM  | 100  | 125 N  |
-| M134       | 7.62 NATO   | 18 kg   | 4000 RPM | 2000 | 776 N  |
+| Payload    | Calibre     | Mass   | Rate     | Capacity | F_avg  |
+|------------|-------------|--------|----------|----------|--------|
+| Glock 18   | 9×19        | 0.66 kg| 1200 RPM | 33       | 62 N   |
+| HK416 A5   | 5.56 NATO   | 3.0 kg | 850 RPM  | 30       | 79 N   |
+| M4 Carbine | 5.56 NATO   | 3.4 kg | 800 RPM  | 30       | 80 N   |
+| AKM        | 7.62×39     | 3.3 kg | 600 RPM  | 30       | 73 N   |
+| M249 SAW   | 5.56 NATO   | 7.5 kg | 800 RPM  | 200      | 80 N   |
+| PKM        | 7.62×54R   | 7.5 kg | 650 RPM  | 100      | 125 N  |
+| AA-12      | 12 ga       | 5.5 kg | 300 RPM  | 20       | 80 N   |
+| M134       | 7.62 NATO   | 18 kg  | 4000 RPM | 2000     | 776 N  |
 
 ### How recoil enters the simulation
 
-We don't average it — we apply each shot as a discrete impulse over one sim
-step (`dt = 2 ms`). Per shot:
+Each shot is applied as a discrete impulse over one sim step (`dt = 2 ms`):
 
 ```
-F_body  =  -fire_direction * J / dt            (huge force for one timestep)
+F_body  =  -fire_direction * J / dt            (large force for one timestep)
 M_body  =  mount_offset × F_body               (moment about drone CoM)
 ```
 
-Both vectors are then rotated into the world frame (because MuJoCo's
-`xfrc_applied` expects world-frame wrenches) and added to the drone body for
-that step:
+Both vectors are rotated into the world frame and added to the drone body:
 
 ```python
 data.xfrc_applied[drone, 0:3] = R · F_body
 data.xfrc_applied[drone, 3:6] = R · M_body
 ```
 
-The integrated impulse `F·dt = J` is correct, *and* the discrete shot-to-shot
-dynamics are preserved — for low-RoF guns you can actually see each round
-shake the drone, while for the M134 the fire rate is so high it acts as a
-steady push.
+The integrated impulse `F·dt = J` is correct, and discrete shot-to-shot
+dynamics are preserved — for low-RoF payloads each round visibly shakes the
+drone; for the M134 the rate is so high it acts as a steady push.
 
-The **moment arm** matters. The gun is mounted forward of and below the CoM
-(typical real-world geometry — clear of the rotors, balanced ammo box). A
-backward force at a below-CoM mount produces a **pitch-up torque**, which
-the controller has to fight on top of the linear push.
+The **moment arm** matters. The payload is mounted forward of and below the
+CoM (clear of the rotors, balanced). A backward force at a below-CoM mount
+produces a **pitch-up torque** the controller must fight in addition to the
+linear push.
 
-## 7. Why the drone has to be big
+## 7. Why the airframe has to be large
 
 A bare 0.5 kg racing drone with hover thrust ≈ 1.2 N per rotor would be
-tossed into orbit by an M4's recoil (80 N average, 65 × the drone's weight).
-Real military weaponized drones are **5–25 kg** for exactly this reason.
+destabilised by an HK416's recoil (79 N average, 66× the drone's weight).
+Real autonomous intercept platforms are **5–25 kg** for exactly this reason.
 The defaults here:
 
 | Quantity        | Value           |
@@ -271,411 +248,241 @@ The defaults here:
 | Max thrust/rotor| 90 N            |
 | Total max thrust| 360 N           |
 
-Loaded with an M249 (7.5 kg gun + 200 × 11.8 g rounds = 9.86 kg payload), the
-drone weighs ~12.4 kg ≈ 121 N. Hover throttle is 34 % of max — plenty of
-headroom for tilt-compensation maneuvering. Loaded with a Glock 18 (0.66 +
-0.40 = 1.06 kg), the drone weighs ~3.6 kg, and full-auto recoil at 62 N is
-**178 % of its weight** — physically uncompensable, the drone tumbles
-backwards. That's not a bug, it's the experimental answer: full-auto handgun
-fire on a small drone is unphysical.
+Loaded with the HK416 A5 (3.0 kg + 30-round mag = 3.35 kg payload), the
+drone weighs ~5.9 kg ≈ 57 N. The HK416's average recoil (79 N) exceeds the
+drone's own weight — the controller must actively compensate during
+engagement. This is the primary RL challenge.
 
 ## 8. Where the inertia tensor comes from
 
-The MuJoCo body's inertia is the airframe's plus a parallel-axis transfer for
-the rigidly mounted gun + ammo treated as a point mass at the mount offset
+The body inertia is the airframe's plus a parallel-axis transfer for the
+rigidly mounted payload + ammo treated as a point mass at the mount offset
 **r** = (m_x, m_y, m_z):
 
 ```
-I_xx_total  =  I_xx_drone  +  m_gun · (m_y² + m_z²)
-I_yy_total  =  I_yy_drone  +  m_gun · (m_x² + m_z²)
-I_zz_total  =  I_zz_drone  +  m_gun · (m_x² + m_y²)
+I_xx_total  =  I_xx_drone  +  m_payload · (m_y² + m_z²)
+I_yy_total  =  I_yy_drone  +  m_payload · (m_x² + m_z²)
+I_zz_total  =  I_zz_drone  +  m_payload · (m_x² + m_y²)
 ```
-
-For a 9.86 kg M249 mounted at (0.30, 0, −0.06), I_yy goes from 0.05 to
-**0.92** kg·m² — pitch becomes an order of magnitude harder to swing. The
-controller compensates because its gains are inertia-scaled (see §5).
 
 ## 9. Tuning hints
 
 | Symptom                                | Adjust                              |
 |----------------------------------------|-------------------------------------|
 | Drone wobbles / overshoots in attitude | ↓ `kp_att`, ↑ `kd_att`             |
-| Drone has steady horizontal offset under fire | ↑ `ki_pos[0:2]`              |
+| Drone has steady horizontal offset under recoil | ↑ `ki_pos[0:2]`         |
 | Drone sags below altitude setpoint     | ↑ `ki_pos[2]`                       |
 | Drone responds too aggressively        | ↓ `kp_pos`, or ↓ `max_tilt_deg`     |
 | More realistic sluggish drone          | ↑ `motor_tau` (try 0.08 – 0.12)     |
-| Drone tumbles every time it fires      | gun is too big — try a lighter one or scale up `mass`, `omega_max`, `arm_length` |
+| Drone destabilises every engagement    | payload is too heavy — try lighter one or scale up `mass`, `omega_max`, `arm_length` |
 
 ## 10. Stochastic disturbances
 
 Realistic flight is never deterministic. Two sources of randomness are
-modeled, both driven by a single `numpy.random.Generator` seeded by `--seed`
-so any run can be reproduced exactly.
+modeled, both driven by a single `numpy.random.Generator` seeded by `--seed`.
 
 ### Wind
 
-Mean wind plus an **Ornstein-Uhlenbeck** turbulent gust process — a
-band-limited Gaussian noise with a sensible correlation time (1-3 s for
-near-ground turbulence). Each component obeys
+Mean wind plus an **Ornstein-Uhlenbeck** turbulent gust process:
 
 ```
 dW/dt  =  -W/τ  +  σ · √(2/τ) · η(t)
 ```
 
-where η is unit white noise. The stationary distribution is N(0, σ²); τ
-controls how quickly gusts evolve. Apparent wind on the drone is
-`v_apparent = wind − v_drone`, and we apply quadratic drag
+Stationary distribution is N(0, σ²); τ controls gust evolution rate. Apparent
+wind on the drone is `v_apparent = wind − v_drone`, with quadratic drag:
 
 ```
 F_drag  =  ½ · ρ · Cd·A · |v_apparent| · v_apparent
 ```
 
-with the airframe's `Cd·A` product (default 0.025 m², typical of a 0.35 m
-quadrotor presenting itself broadside). At 5 m/s headwind that's about
-0.4 N — small relative to a 100 N drone weight, but visible in flight as a
-slow lean and integrator-driven drift.
-
 ### Per-shot recoil noise
 
-Real-gun recoil varies shot to shot because of:
+Real recoil varies shot to shot (powder charge tolerance, bullet weight
+tolerance, barrel temperature, muzzle whip). Two knobs:
 
-* powder charge tolerance (~1-2 % std dev for milspec ammo)
-* bullet weight tolerance (~0.5 %)
-* friction in the action (gas-operated systems are noisier than direct blowback)
-* barrel temperature affecting peak chamber pressure
-* muzzle whip (the barrel oscillates as the bullet exits, giving each shot a slightly different exit angle)
-
-Two knobs implement this:
-
-* `--recoil-noise σ` multiplies each shot's impulse by `1 + σ·z` where `z ~ N(0, 1)`. Typical: 0.02-0.05.
-* `--recoil-angle-noise σ_deg` adds a Gaussian wobble to the firing direction. Typical: 0.5-1.5°.
-
-Over many shots both average out to the nominal value, so steady-state
-behaviour is unchanged — but the controller has to fight a more chaotic
-disturbance, and the bullets visibly scatter.
+* `--recoil-noise σ` multiplies each shot's impulse by `1 + σ·z`, `z ~ N(0,1)`.
+* `--recoil-angle-noise σ_deg` adds Gaussian wobble to the firing direction.
 
 ### Reproducibility
 
 ```
-python main.py --seed 42 --gun m4_carbine --recoil-noise 0.04 --wind 5 0 0 --gust 1.5
+python main.py --seed 42 --gun hk416 --recoil-noise 0.04 --wind 5 0 0 --gust 1.5
 ```
 
-Same seed + same flags = bit-for-bit identical trajectory. Useful for
-A/B testing controller changes against a fixed disturbance profile.
+Same seed + same flags = bit-for-bit identical trajectory.
 
 ---
 
-## 11. Bullets and casings (`--projectiles`)
+## 11. Projectiles and casings (`--projectiles`)
 
 Off by default; enable with `--projectiles`.
 
-### Bullets
+### Projectiles
 
-Bullets travel at 360-940 m/s — too fast for honest MuJoCo collision
-detection at 2 ms timesteps (a 5.56 NATO bullet covers 1.9 m per step,
-tunneling through any floor or target thinner than that). So bullets are
-simulated entirely in **Python** with explicit ballistics:
+Projectiles travel at 360–940 m/s — too fast for MuJoCo collision detection
+at 2 ms timesteps (a 5.56 NATO round covers 1.9 m per step). So projectiles
+are simulated in **Python** with explicit ballistics:
 
 ```
 F_drag  =  -½ · ρ · Cd · A · |v| · v        (per kg)
 acc     =  g + F_drag / m
 ```
 
-The frontal area `A` is approximated from the bullet's mass assuming lead
-density (11.34 g/cm³) and a sphere — close enough for visualization; for
-actual external-ballistics accuracy you'd plug in cartridge-specific G7
-coefficients. Each active bullet renders as a short line segment between
-its previous and current position in `viewer.user_scn`, giving a tracer
-effect.
+Each active projectile renders as a short line segment between its previous
+and current position, giving a tracer effect.
 
 ### Casings
 
-Casings are slow (3-8 m/s ejection), so they're full MuJoCo free-joint
-rigid bodies. We **pre-allocate a pool** in the XML (default 60 slots)
-because MuJoCo doesn't support runtime body creation. To "spawn" a casing
-we teleport one of the parked bodies to the gun's ejection port and write
-its linear and angular velocity:
+Casings are slow (3–8 m/s ejection), so they are full MuJoCo free-joint
+rigid bodies. A pool is pre-allocated in the XML (default 60 slots) because
+MuJoCo does not support runtime body creation. To "spawn" a casing, one of
+the parked bodies is teleported to the ejection port with appropriate velocity:
 
 ```
 v_world  =  v_drone  +  R_body→world · (eject_speed · eject_dir_body + jitter)
-ω_world  ~  N(0, 20 rad/s)         (real casings tumble fast leaving the port)
+ω_world  ~  N(0, 20 rad/s)
 ```
-
-Once a casing's lifetime expires (default 5 s), it's parked back below the
-floor with zero velocity. Because the pool is a ring buffer, sustained
-firing eventually overwrites old casings — fine for a visualization layer.
-
-Each gun in the catalog declares its own case mass + dimensions, so the
-in-flight rendering uses the right brass for the chosen weapon (a 50 mm
-.50 BMG case looks distinctly larger than a 19 mm 9 mm case).
 
 ### Casing-vs-propeller collision
 
-Each rotor gets a thin **disc geom** placed at the rotor location, set up
-with collision bitmasks so it ONLY collides with casings — never the floor,
-never the airframe, never bullets:
+Each rotor has a thin disc geom (collision bitmask: casings only) so spent
+casings can strike the props. Any casing-vs-prop contact is logged and the
+casing immediately despawned — modelling a real prop fracturing the brass on
+first contact.
 
-```
-contype/conaffinity bitmasks
-       bit 1 = floor
-       bit 2 = drone airframe       (collides with floor only)
-       bit 4 = propeller discs      (collides with casings only)
-       bit 8 = casings              (collides with floor + airframe + props)
-```
-
-After every physics step we walk MuJoCo's contact list, and any
-casing-vs-prop pair is logged once and the casing is **immediately
-despawned** — this models the real prop pulverizing the brass on first
-contact (without it, the static disc would let the casing sit there
-generating duplicate contacts every step).
-
-### Would a casing damage a real propeller?
-
-**Yes — and badly.** Order of magnitude:
-
-* Spent 5.56 NATO brass case: 5 g, ejected at 3-6 m/s
-* 38 cm carbon prop spinning at 5000 RPM: tip speed ≈ 100 m/s
-* Relative impact velocity: 50-100 m/s
-* Kinetic energy at impact: ½ · 0.005 · 100² ≈ **25 J**
-
-That's far more than a thin carbon-fiber blade can absorb without chipping
-or fracturing. Real military weaponized drones use:
-
-* **Brass deflectors** that route ejected cases away from the rotor disc.
-* **Downward-ejecting** weapons (some M4 variants are converted to bottom-
-  eject for vehicle/aircraft mounts).
-* **Sacrificial / replaceable** props on cheap loitering munitions where
-  per-mission damage is acceptable.
-
-Run `python main.py --gun m249_saw --projectiles --mode auto` and watch the
-console — with the default M4-pattern right-side ejection, ~70 % of spent
-cases land on the front-right rotor in the first few seconds.
+**This is a real operational constraint.** A 5 g brass case ejected at 4 m/s
+into a carbon prop tip moving at 100 m/s delivers ~25 J — far more than a
+thin blade absorbs without fracturing. Real autonomous intercept platforms use
+brass deflectors, downward-ejecting conversions, or sacrificial replaceable
+props.
 
 ---
 
-## 12. Targets and aiming (`--targets N`)
+## 12. Aerial threat targets and intercept geometry (`--targets N`)
 
-Off by default. `--targets N` spawns `N` colored sphere targets in a ring
-around the origin (radius and height are also configurable). Each target
-has a hit counter and fades from white toward red as it accumulates damage.
+Off by default. `--targets N` spawns N aerial threat targets in a ring around
+the origin (radius and height configurable). Each target has a hit counter.
 
 ### Hit detection — ray casting, not collisions
 
-Bullets travel at 360–940 m/s. With our 2 ms timestep that's 0.7–1.9 m of
-travel per step, which would tunnel through any target geom of reasonable
-size. Even MuJoCo's continuous collision detection breaks down at those
-speeds. So target hits are detected differently from casing-vs-prop hits:
+Projectiles travel at 360–940 m/s; with a 2 ms timestep they cover 0.7–1.9 m
+per step and tunnel through any geom. So hits are detected by ray casting:
 
-For every **shot fired**, we cast `pellets_per_shot` rays from the muzzle
+For every **shot fired**, `pellets_per_shot` rays are cast from the muzzle
 along the firing direction using `mujoco.mj_ray`. Each ray gets independent
-angular jitter (Gaussian, std-dev `pellet_spread_deg`) to model bullet
-dispersion. The first geom each ray hits is checked against the target
-list; if it matches, the target's hit count is incremented and its color
-fades toward red.
+angular jitter (Gaussian, std-dev `pellet_spread_deg`). The first geom each
+ray hits is checked against the threat list.
 
-This is **more accurate than letting bullets collide**, not less: at
-realistic engagement ranges of 5–50 m, a bullet remains within ~95 % of its
-muzzle velocity, so the trajectory is nearly straight and arrives in
-microseconds. A straight ray cast at the moment of firing matches reality
-to better than a centimeter.
+This is **more accurate than collision detection**: at engagement ranges of
+5–100 m, a projectile remains within ~95% of muzzle velocity, so the
+trajectory is nearly straight. A ray cast at the moment of firing matches
+reality to better than a centimetre.
 
-### Multi-pellet shotgun
+### Multi-pellet spread
 
-The AA-12 fires nine 8.4 mm 00-buckshot pellets per round, with a real-world
-spread of ~30 cm at 25 m. We model this with `pellets_per_shot=9` and
-`pellet_spread_deg=1.5`. All other guns are single-projectile
-(`pellets_per_shot=1`). Hits register independently per pellet — a perfect
-shot at close range can put all 9 hits on one target.
+The AA-12 fires nine pellets per round with `pellet_spread_deg=1.5` (~30 cm
+pattern at 25 m). All other payloads are single-projectile. Hits register
+independently per pellet.
 
-### Aiming — what's possible and what isn't
+### Intercept geometry — yaw and pitch constraints
 
-A free-flying quadrotor can only thrust along its own +z axis, so the
-**airframe IS the gimbal** — to point the gun anywhere, you tilt the whole
-drone. Two cases differ fundamentally:
+* **Yaw is "free."** Rotating about the vertical axis does not redirect thrust.
+  The drone can yaw to face any threat without affecting hover.
 
-* **Yaw aim is "free."** Rotating the body about the vertical axis doesn't
-  redirect thrust. The drone can yaw to face any direction without
-  affecting hover. This is implemented as `--aim-yaw`: the autonomous-mode
-  setpoint generator overrides its waypoint yaw to point at the nearest
-  target.
+* **Pitch is NOT free.** Tilting the airframe redirects thrust horizontally,
+  causing the drone to accelerate. There is no static equilibrium at nonzero
+  pitch without a balancing horizontal force (recoil *is* such a force during
+  sustained engagement — the drone settles into a lean that balances payload
+  push against redirected thrust).
 
-* **Pitch aim is NOT free.** Tilting the drone redirects thrust into a
-  horizontal component, so the drone immediately starts to accelerate
-  sideways. There's no equilibrium where the drone hovers stationary at
-  a non-zero pitch — that would require a horizontal force balancing the
-  redirected thrust, and a free-flying drone has no such force. (Recoil
-  *is* such a force, which is why the drone settles at ~46° leaning into
-  an M249's recoil — the recoil and the redirected-thrust horizontal
-  component cancel out.)
+Two real-world solutions for vertical intercept aim:
 
-Two real-world workarounds for vertical aim, neither implemented here but
-both natural extensions:
+1. **Lean-and-engage**: drone briefly tilts to aim, fires a burst,
+   re-stabilises. Implemented as an additional `pitch_offset` term in the
+   position controller setpoint.
 
-1. **Lean-and-shoot**: drone briefly tilts to aim, fires a short burst,
-   then re-stabilizes. The drone drifts during the lean — accept it as a
-   tactical trade-off. Implementing this means injecting an additional
-   `pitch_offset` term that's added to the position controller's
-   `pitch_des`. The drone will track the offset until the position
-   integrator builds up an opposing demand.
-
-2. **Gimbaled mount**: a separate ball joint between drone and gun, with
-   its own actuators. The drone hovers level; the gun pivots independently.
-   This is what military quadcopter platforms use. Implementing it means
-   adding a 2-DOF body chain in the XML (pan + tilt joints), two more
-   actuators, and a separate gimbal controller. Roughly 50 extra lines.
+2. **Gimbaled mount**: separate ball joint between airframe and payload with
+   its own actuators. The airframe hovers level; the payload pivots
+   independently. This is what purpose-built counter-UAS platforms use.
 
 ### Quick demo
 
 ```
-# 5 targets in a ring; M4 carbine; drone yaws to face nearest:
-python main.py --gun m4_carbine --targets 5 --aim-yaw --mode auto
+# 5 aerial threat targets in a ring; HK416; drone yaws to face nearest:
+python main.py --gun hk416 --targets 5 --aim-yaw --mode auto
 
-# 8 targets at custom radius/height; AA-12 with shotgun spread:
+# 8 targets at custom radius/height; AA-12 shotgun spread:
 python main.py --gun aa12_shotgun --targets 8 --target-radius 6 \
                --target-height 2.0 --aim-yaw --mode auto
 
-# Plus full disturbances + projectiles + reproducible seed:
-python main.py --gun pkm --targets 5 --aim-yaw --projectiles \
+# Full disturbances + projectiles + reproducible seed:
+python main.py --gun hk416 --targets 5 --aim-yaw --projectiles \
                --seed 42 --recoil-noise 0.04 --wind 4 0 0 --gust 1.0
-```
-
-Each ray-cast hit prints to the console:
-
-```
-[hit] target_0 at (+3.97, +0.21, +1.48) [3/10]
 ```
 
 ---
 
 ## 13. Recording, replay, and analysis
 
-A run can be saved to a single `.npz` and replayed or analyzed later.
-
 ```
-python main.py --gun m4_carbine --targets 5 --aim-yaw --mode auto \
-               --record flight.npz
+python main.py --gun hk416 --targets 5 --aim-yaw --mode auto --record flight.npz
 
-python replay.py flight.npz             # real-time playback
-python replay.py flight.npz --speed 0.25 # quarter-speed slow-mo
+python replay.py flight.npz
+python replay.py flight.npz --speed 0.25
 ```
 
 ### File layout
 
-One `numpy.savez_compressed` archive contains:
-
-| key            | shape         | what's in it                                    |
+| key            | shape         | contents                                        |
 |----------------|---------------|-------------------------------------------------|
 | `t`            | (N,)          | sim time per frame                              |
 | `qpos`         | (N, model.nq) | full pose vector (drone + casings + targets)    |
 | `qvel`         | (N, model.nv) | full velocity vector                            |
 | `ctrl`         | (N, 4)        | per-rotor thrust commands                       |
-| `pos_des`      | (N, 3)        | position setpoint (controller input)            |
+| `pos_des`      | (N, 3)        | position setpoint                               |
 | `yaw_des`      | (N,)          | yaw setpoint                                    |
 | `wind`         | (N, 3)        | world-frame wind vector                         |
 | `ammo`         | (N,)          | rounds remaining                                |
 | `xfrc_drone`   | (N, 6)        | recoil + drag wrench applied to drone           |
-| `events`       | scalar str    | JSON-encoded list of dicts (shots, hits, resets)|
-| `metadata`     | scalar str    | JSON-encoded run metadata                       |
+| `events`       | scalar str    | JSON list of dicts (shots, intercepts, resets)  |
+| `metadata`     | scalar str    | JSON run metadata including full MuJoCo XML     |
 
-`metadata` includes the **full MuJoCo XML string**, the gun name, the CLI
-arguments, and the entire config (DRONE / CTRL / SIM / DIST / PROJ
-dataclasses). The XML is what lets `replay.py` reconstruct the exact same
-scene with no reference back to the simulator code.
-
-### Why `qpos`/`qvel` instead of just position?
-
-- `qpos`/`qvel` is *exactly* what MuJoCo wants for kinematic playback.
-  Replay sets these and calls `mj_forward` — no physics, no controller,
-  no integration error. The viewer renders pixel-identical to the live run.
-- Casings are part of `qpos` (they're real free-joint bodies), so they
-  appear in replay automatically.
-- Bullets aren't (they were tracked in Python during the live run), so
-  they don't appear in replay — but each bullet's `shot` event is logged.
-
-### Analysis with NumPy / pandas / matplotlib
+### Analysis with NumPy / matplotlib
 
 ```python
 import numpy as np, json, matplotlib.pyplot as plt
-from logger import load_trajectory
 
-arrays, meta, events = load_trajectory("flight.npz")
-t   = arrays["t"]
-pos = arrays["qpos"][:, 0:3]              # drone XYZ
-quat = arrays["qpos"][:, 3:7]
-ctrl = arrays["ctrl"]                     # per-rotor thrust
+data = np.load("flight.npz", allow_pickle=True)
+t    = data["t"]
+pos  = data["qpos"][:, 0:3]
+ctrl = data["ctrl"]
 
-# 1. position vs time
-plt.figure(); plt.plot(t, pos); plt.legend(["x", "y", "z"])
-plt.xlabel("t [s]"); plt.ylabel("position [m]"); plt.show()
-
-# 2. rotor thrust (where you'd see the controller pumping per-rotor
-#    differential thrust to fight a per-shot recoil torque)
-plt.figure(); plt.plot(t, ctrl); plt.legend(["m1","m2","m3","m4"])
-plt.xlabel("t [s]"); plt.ylabel("thrust [N]"); plt.show()
-
-# 3. event analysis
-shots = [e for e in events if e["kind"] == "shot"]
-hits  = [e for e in events if e["kind"] == "target_hit"]
-print(f"{len(shots)} trigger pulls, {len(hits)} target hits "
+events  = json.loads(str(data["events"]))
+shots   = [e for e in events if e["kind"] == "shot"]
+hits    = [e for e in events if e["kind"] == "target_hit"]
+print(f"{len(shots)} rounds fired, {len(hits)} intercepts "
       f"({100*len(hits)/max(1,len(shots)):.1f}% hit rate)")
-
-# 4. per-target damage
-from collections import Counter
-by_target = Counter(e["target_id"] for e in hits)
-for tid, n in sorted(by_target.items()):
-    print(f"  target_{tid}: {n} hits")
 ```
-
-### Decimation
-
-Recording at the full 500 Hz physics rate is wasteful — almost nothing
-relevant changes that fast. Default `--record-decimation 5` saves every 5th
-step (100 Hz log), giving:
-
-* ~70 KB per second of flight (compressed) for a 5-target scenario
-* ~10–20 MB per minute with the full 60-casing pool active
-
-To go denser (eg. for a paper-quality plot of a single recoil pulse):
-`--record-decimation 1` — full sim rate. To go sparser (eg. logging
-overnight): `--record-decimation 25` for 20 Hz.
-
-### Tips
-
-- The recorder writes only when the viewer closes (Esc) or the process
-  exits cleanly. If you `Ctrl+C` mid-run nothing is saved. To checkpoint,
-  call `recorder.save()` from your own hook on a timer.
-- `np.savez_compressed` uses zip + deflate; trajectories compress 3–5×
-  because adjacent frames are very similar.
-- For *very* long runs you'd want streaming (HDF5 or parquet). For the
-  ~minute-scale experiments this sim does, `.npz` is the sweet spot.
 
 ---
 
-## 14. Gymnasium environment (`drone_env.DroneEnv`)
+## 14. Gymnasium RL environment (`drone_env.DroneEnv`)
 
-The simulator is wrapped in a standard `gymnasium.Env` for use with RL
-libraries (Stable-Baselines3, RLlib, CleanRL, etc.). Install Gymnasium:
-
-```
-pip install gymnasium
-```
-
-Quick example:
+The simulator is wrapped in a standard `gymnasium.Env` for use with
+Stable-Baselines3, RLlib, CleanRL, etc.
 
 ```python
 from drone_env import DroneEnv
 
 env = DroneEnv(
-    gun="m4_carbine",
-    n_targets=5,
-    target_radius=5.0,
+    gun="hk416",
+    n_targets=1,
+    target_radius=30.0,
     wind_mean=(3.0, 0.0, 0.0),
-    wind_gust_sigma=1.0,
     recoil_noise=0.04,
-    recoil_angle_noise_deg=1.0,
     seed=42,
 )
-
 obs, info = env.reset()
 for _ in range(500):
     action = env.action_space.sample()
@@ -687,19 +494,18 @@ env.close()
 
 ### Action space
 
-5-dim continuous Box in [-1, 1]. The interpretation depends on
-`control_level`:
+5-dim continuous Box in [−1, 1]:
 
-| `control_level="setpoint"` (default) | `control_level="thrust"`             |
-|--------------------------------------|--------------------------------------|
-| `[x_des, y_des, z_des, yaw_des, fire]` | `[T1, T2, T3, T4, fire]`           |
-| Position scaled to ±`action_pos_range_m` (default 5 m); yaw to ±π. The on-board cascaded PID flies the drone for you. | Each thrust mapped to [0, max_thrust_per_rotor]. Direct attitude control — must learn to hover. |
+| `control_level="setpoint"` (default) | `control_level="thrust"` |
+|--------------------------------------|--------------------------|
+| `[x_des, y_des, z_des, yaw_des, engage]` | `[T1, T2, T3, T4, engage]` |
+| Position scaled to ±`action_pos_range_m`; yaw to ±π. On-board cascaded PID flies the drone. | Per-rotor thrust mapped to [0, T_max]. Direct attitude control — policy must learn to hover. |
 
-`fire > 0` means the trigger is held this step.
+`engage > 0` triggers payload discharge this step.
 
 ### Observation space
 
-A flat float32 vector (length depends on `n_targets`):
+Flat float32 vector:
 
 ```
 pos              (3)    drone XYZ in world frame
@@ -707,76 +513,36 @@ quat             (4)    drone orientation (w, x, y, z)
 vel              (3)    world-frame linear velocity
 omega_body       (3)    body-frame angular velocity
 ammo_normalized  (1)    rounds remaining / capacity
-wind             (3)    current world-frame wind (mean + gust)
-target_rel       (3)    nearest-target position relative to drone
-target_hits      (N)    hit count per target
+wind             (3)    current world-frame wind
+target_rel       (3)    nearest-threat position relative to drone
+target_hits      (N)    intercept count per target
 ```
-
-### Default reward
-
-```
-r =  10 * new_hits_this_step
-   - 0.05 * shots_fired_this_step
-   - 0.01 * |distance to nearest target|
-   - 0.05 * (roll^2 + pitch^2)
-   - 100  if the drone crashes
-```
-
-Override `compute_reward(info)` in a subclass to do something else (sparse
-rewards, hover-only task, etc.).
 
 ### Termination / truncation
 
-* **Terminated** when the drone crashes (z < 0.1 m), flips (|roll| or
-  |pitch| > 90°), or leaves the ±30 m horizontal arena.
-* **Truncated** when `step_count >= max_episode_steps` (default 500).
+* **Terminated**: drone crashes (z < 0.1 m), flips (|roll| or |pitch| > 90°), or leaves ±30 m arena.
+* **Truncated**: `step_count >= max_episode_steps` (default 500).
 
 Each `env.step()` advances `frame_skip` physics substeps (default 10),
-giving a 50 Hz control rate on top of the 500 Hz physics — the standard
-SB3-friendly setting.
+giving 50 Hz control rate on 500 Hz physics.
 
-### Reproducibility
-
-Pass `seed=` to either the constructor or `env.reset()`. Every random
-draw — wind gusts, recoil noise, casing ejection, pellet spread, ray
-jitter — is pulled from a single seeded `numpy.random.Generator`. Same
-seed + same kwargs = bit-for-bit identical observations across runs
-(verified at 1e-9 precision in the smoke test).
-
-### Settings cheat sheet
+### Settings
 
 ```python
 DroneEnv(
-    # weapon catalog (see --list-guns or gun.py)
-    gun                     = "m4_carbine",
-
-    # target field
-    n_targets               = 5,
-    target_radius           = 5.0,
+    gun                     = "hk416",
+    n_targets               = 1,
+    target_radius           = 30.0,
     target_height           = 1.5,
-
-    # disturbances (set sigmas to 0 to disable)
     wind_mean               = (0.0, 0.0, 0.0),
     wind_gust_sigma         = 0.0,
-    recoil_noise            = 0.0,       # fractional impulse jitter
+    recoil_noise            = 0.0,
     recoil_angle_noise_deg  = 0.0,
-
-    # control mode
-    control_level           = "setpoint",   # or "thrust"
-    action_pos_range_m      = 5.0,
-
-    # optional projectile layers
-    casings_enabled         = False,
-    bullets_enabled         = False,
-
-    # episode
+    control_level           = "thrust",
+    action_pos_range_m      = 40.0,
     max_episode_steps       = 500,
-    frame_skip              = 10,           # 50 Hz control on 500 Hz sim
-
-    # presentation
-    render_mode             = None,         # or "human" for live MuJoCo viewer
-
-    # reproducibility
+    frame_skip              = 10,
+    render_mode             = None,
     seed                    = None,
 )
 ```
@@ -786,10 +552,10 @@ DroneEnv(
 ## 15. Sources
 
 * Mellinger & Kumar, *Minimum snap trajectory generation and control for
-  quadrotors*, ICRA 2011 — the canonical cascaded controller derivation.
+  quadrotors*, ICRA 2011 — cascaded controller derivation.
 * Bouabdallah, *Design and control of quadrotors with application to
   autonomous flying*, EPFL 2007 — rotor model and inertia values.
-* Modern Firearms encyclopedia (modernfirearms.net) and Wikipedia for cartridge
-  ballistics and weapon cyclic rates.
-* MuJoCo documentation (mujoco.readthedocs.io) for the `<motor>` actuator and
+* Modern Firearms encyclopedia (modernfirearms.net) for calibre ballistics and
+  cyclic rates (payload physics parameters).
+* MuJoCo documentation (mujoco.readthedocs.io) for `<motor>` actuator and
   free-joint state conventions.
