@@ -127,6 +127,16 @@ class DroneEnv(gym.Env):
         # ---- optional projectile layers ----
         casings_enabled: bool = False,
         bullets_enabled: bool = False,
+        # ---- spawn randomisation ----
+        # "fixed"         — always spawn at SIM.init_pos facing SIM.init_yaw
+        # "toward_target" — yaw rotated so gun faces nearest target at spawn
+        # "random"        — yaw uniformly sampled in [-π, π] each episode
+        spawn_heading: str = "fixed",
+        # ---- observation ----
+        # Set False to drop absolute x,y position from the obs vector.
+        # Reduces obs_dim by 2 (17→15).  Requires retraining any pretrained
+        # weights that depend on the obs shape (e.g. BC / SplitExtractor).
+        obs_pos_xy: bool = True,
         # ---- episode ----
         max_episode_steps: int = 500,
         frame_skip: int = 10,            # physics steps per env.step
@@ -152,6 +162,8 @@ class DroneEnv(gym.Env):
         self.action_pos_range_m = float(action_pos_range_m)
         self.casings_enabled = bool(casings_enabled)
         self.bullets_enabled = bool(bullets_enabled)
+        self.spawn_heading = spawn_heading
+        self.obs_pos_xy = bool(obs_pos_xy)
         self.max_episode_steps = int(max_episode_steps)
         self.frame_skip = int(frame_skip)
         self.render_mode = render_mode
@@ -175,8 +187,8 @@ class DroneEnv(gym.Env):
         # component is always the fire trigger).
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
 
-        # pos(3) + quat(4) + vel(3) + omega(3) + ammo(1) + target_rel(3) = 17
-        obs_dim = 3 + 4 + 3 + 3 + 1 + 3
+        # pos(3 or 1) + quat(4) + vel(3) + omega(3) + ammo(1) + target_rel(3)
+        obs_dim = (3 if obs_pos_xy else 1) + 4 + 3 + 3 + 1 + 3
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -223,6 +235,19 @@ class DroneEnv(gym.Env):
             self.target_field = tgt.TargetField(
                 self.model, self.data, self.targets_data, self.drone_body_id
             )
+
+        # Spawn heading override (after targets so "toward_target" can read pos).
+        if self.spawn_heading != "fixed":
+            if self.spawn_heading == "random":
+                yaw = self.rng.uniform(-np.pi, np.pi)
+            else:  # "toward_target"
+                yaw = SIM.init_yaw
+                if self.target_field is not None and self.target_field.targets:
+                    tp = self.target_field.targets[0].pos
+                    dp = np.asarray(SIM.init_pos, float)
+                    yaw = np.arctan2(tp[1] - dp[1], tp[0] - dp[0])
+            half = yaw * 0.5
+            self.data.qpos[3:7] = [np.cos(half), 0.0, 0.0, np.sin(half)]
 
         # Casings: re-park the whole pool.
         if self.casings_enabled:
@@ -418,8 +443,9 @@ class DroneEnv(gym.Env):
         scale = float(self.target_radius) if self.n_targets > 0 else 1.0
         target_rel_norm = target_rel / scale
 
+        pos_obs = state["pos"] if self.obs_pos_xy else state["pos"][2:3]
         return np.concatenate([
-            state["pos"], state["quat"], state["vel"], state["omega_body"],
+            pos_obs, state["quat"], state["vel"], state["omega_body"],
             np.array([ammo_norm], dtype=float),
             target_rel_norm,
         ]).astype(np.float32)

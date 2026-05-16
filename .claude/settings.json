@@ -4,7 +4,10 @@
       "Bash(python -c ' *)",
       "Bash(python -c \"import json; nb=json.load\\(open\\('experiments/e1_M249_single.ipynb'\\)\\); [print\\(c['source']\\) for c in nb['cells'] if c['cell_type']=='code']\")",
       "Bash(python3 -c ' *)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(python3 -c \"import imageio; print\\('imageio:', imageio.__version__\\)\")",
+      "Bash(python3 -c \"import imageio_ffmpeg; print\\('imageio-ffmpeg ok'\\)\")",
+      "Bash(python3 -c \"import cv2; print\\('cv2:', cv2.__version__\\)\")"
     ]
   }
 }

@@ -5,6 +5,11 @@ import matplotlib.pyplot as plt
 import mujoco
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
+try:
+    import cv2 as _cv2
+except ImportError:
+    _cv2 = None
+
 from drone_sim.control.controller import quat_to_euler
 from drone_sim.sim import quat_to_rot
 from drone_sim.config import SIM
@@ -24,6 +29,9 @@ def visualize_episode(
     cam_distance: float | None = None,
     save_path: str = "trajectory.png",
     flash: bool = True,
+    save_video: str | None = None,
+    video_width: int = 640,
+    video_height: int = 480,
     **env_kwargs,
 ):
     """Run and visualize one episode in the MuJoCo viewer.
@@ -41,6 +49,9 @@ def visualize_episode(
     save_path     : where to save the trajectory PNG
     flash         : if True, the aiming line turns bright yellow when the gun
                     fires; if False the line stays dim red at all times
+    save_video    : if set, path to save an MP4 video (requires opencv-python)
+    video_width   : pixel width of the saved video
+    video_height  : pixel height of the saved video
     **env_kwargs  : forwarded to env_cls()
     """
     if env_cls is None:
@@ -60,8 +71,13 @@ def visualize_episode(
     )
     obs, info = env.reset(seed=seed)
 
-    target_pos  = obs[:3] + obs[14:17] * target_radius
-    drone_start = obs[:3].copy()
+    # Read pose directly from MuJoCo — works regardless of obs_pos_xy setting.
+    drone_start = env.unwrapped.data.qpos[:3].copy()
+    if (env.unwrapped.target_field is not None
+            and env.unwrapped.target_field.targets):
+        target_pos = env.unwrapped.target_field.targets[0].pos.copy()
+    else:
+        target_pos = drone_start + np.array([target_radius, 0.0, 0.0])
 
     env.render()
     viewer = env.unwrapped._viewer
@@ -82,6 +98,26 @@ def visualize_episode(
     fire_dir_body = np.asarray(env.unwrapped.weapon.fire_dir_body, float)
     mount_offset  = np.asarray(env.unwrapped.weapon.mount_offset_m, float)
 
+    # --- offscreen video setup ---
+    video_writer   = None
+    off_renderer   = None
+    if save_video is not None:
+        if _cv2 is None:
+            raise ImportError("opencv-python is required for video saving (pip install opencv-python)")
+        fps = 1.0 / step_duration if step_duration > 0 else 30.0
+        fourcc = _cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = _cv2.VideoWriter(save_video, fourcc, fps,
+                                        (video_width, video_height))
+        off_renderer = mujoco.Renderer(
+            env.unwrapped.model, height=video_height, width=video_width
+        )
+        off_cam = mujoco.MjvCamera()
+        off_cam.type      = mujoco.mjtCamera.mjCAMERA_FREE
+        off_cam.distance  = float(cam_distance)
+        off_cam.elevation = -25.0
+        off_cam.azimuth   = 135.0
+        off_cam.lookat[:] = (drone_start + target_pos) / 2.0
+
     positions, quats, rewards_log, hits_log = [], [], [], []
 
     for step in range(max_steps):
@@ -90,16 +126,21 @@ def visualize_episode(
         action = model.predict(obs, deterministic=True)[0]
         obs, reward, terminated, truncated, info = env.step(action)
 
-        # aiming line — color flashes bright yellow when firing
+        # Use qpos directly — correct for any obs layout (15-dim or 17-dim)
+        data       = env.unwrapped.data
+        drone_pos  = data.qpos[:3]
+        drone_quat = data.qpos[3:7]
+        R_r  = quat_to_rot(drone_quat)
+        gdir = R_r @ fire_dir_body
+        muz  = drone_pos + R_r @ (mount_offset + fire_dir_body * 0.30)
+
+        firing = flash and info["shots_fired"] > 0
+        color  = _LINE_FIRING if firing else _LINE_IDLE
+
+        # aiming line in the interactive viewer
         if viewer is not None:
             viewer.user_scn.ngeom = 0
-            R_r  = quat_to_rot(obs[3:7])
-            gdir = R_r @ fire_dir_body
-            muz  = obs[:3] + R_r @ (mount_offset + fire_dir_body * 0.30)
-
             if viewer.user_scn.ngeom < viewer.user_scn.maxgeom:
-                firing = flash and info["shots_fired"] > 0
-                color  = _LINE_FIRING if firing else _LINE_IDLE
                 g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
                 mujoco.mjv_initGeom(
                     g, mujoco.mjtGeom.mjGEOM_LINE,
@@ -112,8 +153,28 @@ def visualize_episode(
 
         env.render()
 
-        positions.append(obs[:3].copy())
-        quats.append(obs[3:7].copy())
+        # offscreen frame capture
+        if off_renderer is not None:
+            off_renderer.update_scene(data, camera=off_cam)
+            # add aiming line to offscreen scene
+            scn = off_renderer.scene
+            if scn.ngeom < scn.maxgeom:
+                g = scn.geoms[scn.ngeom]
+                mujoco.mjv_initGeom(
+                    g, mujoco.mjtGeom.mjGEOM_LINE,
+                    np.zeros(3), np.zeros(3), np.zeros(9), color,
+                )
+                mujoco.mjv_connector(
+                    g, mujoco.mjtGeom.mjGEOM_LINE, 0.004,
+                    muz.astype(np.float32),
+                    (muz + gdir * 60.0).astype(np.float32),
+                )
+                scn.ngeom += 1
+            frame_rgb = off_renderer.render()
+            video_writer.write(_cv2.cvtColor(frame_rgb, _cv2.COLOR_RGB2BGR))
+
+        positions.append(data.qpos[:3].copy())
+        quats.append(data.qpos[3:7].copy())
         rewards_log.append(float(reward))
         hits_log.append(int(info["hits"]))
 
@@ -128,6 +189,12 @@ def visualize_episode(
                 f"({'crashed' if terminated else 'truncated'})"
             )
             break
+
+    if video_writer is not None:
+        video_writer.release()
+        print(f"Video saved → {save_video}")
+    if off_renderer is not None:
+        off_renderer.close()
 
     env.close()
 

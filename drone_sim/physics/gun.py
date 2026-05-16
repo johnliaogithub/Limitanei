@@ -214,6 +214,29 @@ GUNS = {
         pellets_per_shot=9,           # 00 buckshot: nine 8.4 mm lead spheres
         pellet_spread_deg=1.5,        # ~30 cm pattern at 25 m
     ),
+    "hk416": dict(
+        # HK416 A5 with 10.4" barrel — compact CQB variant, 5.56x45 NATO.
+        # Best recoil-to-weight ratio in the catalog for a sustained-fire role:
+        # avg recoil ~79 N against ~57 N drone+gun weight → ~57% ratio.
+        # Belt-fed M249 reaches ~49%; heavier guns fare worse.
+        # 850 RPM cyclic with a 30-round STANAG mag (compatible with 100-round
+        # Beta-C drum for extended operations). Shorter OAL than a 14.5" barrel
+        # improves centre-of-gravity placement under the drone.
+        name="HK416 A5 Carbine (5.56x45 NATO, 10.4\" barrel)",
+        mass_kg=3.0,
+        mount_offset_m=(0.25, 0.0, -0.05),
+        fire_dir_body=(1.0, 0.0, 0.0),
+        bullet_mass_kg=0.0040,
+        muzzle_vel_mps=870.0,
+        propellant_mass_kg=0.00170,
+        cyclic_rate_rpm=850.0,
+        capacity_rounds=30,
+        round_total_mass_kg=0.0118,
+        case_mass_kg=0.0050,
+        case_diameter_m=0.0096,
+        case_length_m=0.045,
+        eject_speed_mps=4.0,
+    ),
     "m249_saw": dict(
         name="M249 SAW (5.56x45 NATO, belt fed)",
         mass_kg=7.5,
