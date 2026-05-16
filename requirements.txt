@@ -10,7 +10,7 @@ cuda-toolkit==13.0.2
 cycler==0.12.1
 debugpy==1.8.20
 decorator==5.2.1
--e git+ssh://git@github.com/johnliaogithub/MuJoCoDroneSimulation.git@8f9f229da0f05c3b2f52f2541547c5fbebdc0ed0#egg=drone_sim
+-e .
 etils==1.14.0
 evdev==1.9.3
 executing==2.2.1

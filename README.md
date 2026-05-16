@@ -1,6 +1,13 @@
-# MuJoCo Counter-UAS Drone Simulation
+# Limitanei: MuJoCo Counter-UAS Drone Simulation
 
 A physics-accurate Reinforcement Learning environment built in MuJoCo for autonomous counter-drone (Counter-UAS) research. A PPO agent learns to maintain stable flight while carrying a kinetic interceptor payload, compensating for high-frequency asymmetric recoil impulses during engagement. The simulation studies how onboard weapon systems affect quadrotor flight dynamics and whether a learned control policy can compensate in real time.
+
+<video controls width="720">
+  <source src="experiments/experiment1/e1_HK416_10m.mp4" type="video/mp4">
+  Your browser does not support the video tag. Click here to download the video: [PPO model at 10 meters](experiments/experiment1/e1_HK416_10m.mp4).
+</video>
+
+PPO model at 10 meters from target after approx. 2 million training timesteps.
 
 ## Context
 

@@ -22,7 +22,10 @@ drone_sim/physics/disturbances.py
 drone_sim/physics/gun.py
 drone_sim/physics/targets.py
 drone_sim/rl/__init__.py
+drone_sim/rl/callbacks.py
 drone_sim/rl/custom_envs.py
 drone_sim/rl/env.py
+drone_sim/rl/networks.py
+drone_sim/rl/viz.py
 drone_sim/rl/agents/__init__.py
 drone_sim/rl/agents/pid.py
