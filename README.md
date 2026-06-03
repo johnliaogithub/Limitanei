@@ -10,7 +10,7 @@ PPO model at 10 meters from target after approx. 2 million training timesteps.
 
 Small unmanned aerial systems (UAS) pose an increasing threat to military operations and civil infrastructure. This project models a core challenge of autonomous interceptor drones: hovering stably while delivering kinetic payloads against aerial threat coordinates, despite the destabilising effect of weapon recoil on flight dynamics.
 
-## Run it
+## Run it (PID algorithm)
 
 ```
 # Autonomous intercept demo (drone engages threat coordinates autonomously):
