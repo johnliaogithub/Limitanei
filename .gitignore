@@ -4,4 +4,5 @@ observation.txt
 todo
 .venv/
 *.zip
+!experiments/experiment1/models/ppo_e1_30m_hk416_b.zip
 *.mp4
