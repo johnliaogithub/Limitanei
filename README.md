@@ -1,6 +1,6 @@
 # Limitanei: Counter-UAS Drone RL Simulation
 
-A physics-accurate reinforcement learning environment built in MuJoCo for an autonomous counter-drone project. A PPO agent learns to navigate to and engage a (currently stationary) aerial target while compensating for high-frequency recoil from an onboard weapon. The simulation studies whether a learned control policy can maintain stable flight during weapon discharge, a core challenge for modern autonomous interceptor platforms. See [Run It](#run-it) to try the simulation or evaluate trained models.
+A physics-accurate reinforcement learning environment built in MuJoCo for an autonomous counter-drone project. A PPO agent learns to navigate to and engage a (currently stationary) aerial target while compensating for high-frequency recoil from an onboard weapon. The simulation studies whether a learned control policy can maintain stable flight during weapon discharge, a core challenge for modern autonomous interceptor platforms. See [Setup](#setup) to get started.
 
 ![PPO agent at 10 m from target](experiments/experiment1/e1_HK416_10m.gif)
 
@@ -15,6 +15,88 @@ A physics-accurate reinforcement learning environment built in MuJoCo for an aut
 - **PyTorch** — behavioral cloning, custom policy network
 - **Gymnasium** — environment API
 - **NumPy / Matplotlib** — data collection and visualization
+
+---
+
+## Setup
+
+Requires Python 3.10+.
+
+```bash
+git clone https://github.com/johnliaogithub/Limitanei.git
+cd Limitanei
+python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e .                        # core sim + Gymnasium env
+pip install torch stable-baselines3    # RL training and eval.py
+pip install -e ".[keyboard]"           # optional: keyboard pilot mode
+pip install opencv-python              # optional: --save-video in eval.py
+```
+
+---
+
+## Run It
+
+### Interactive simulation (PID controller, no RL)
+
+```bash
+# Autonomous intercept (drone engages threat coordinates):
+python main.py --mode auto
+
+# Pilot it yourself with a different payload:
+python main.py --mode keyboard --gun pkm
+
+# List all payload options and ballistic stats:
+python main.py --list-guns
+
+# Full disturbances + projectile tracers + reproducible seed:
+python main.py --gun hk416 --targets 5 --aim-yaw --projectiles \
+               --seed 42 --recoil-noise 0.04 --wind 4 0 0 --gust 1.0
+```
+
+Keyboard mode uses **the numeric keypad** (NumLock ON):
+
+```
+7 yaw-L     8 fwd      9 yaw-R
+4 strafe-L  5 RESET    6 strafe-R
+            2 back
++  climb               -  descend
+0  ENGAGE
+```
+
+### Evaluate and visualize trained RL models
+
+```bash
+# Live MuJoCo viewer — 30 m target, real-time playback:
+python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip
+
+# Slow down to 50% for closer inspection:
+python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --speed 0.5
+
+# Headless — print per-step stats and save reward plot (no viewer needed):
+python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --headless
+
+# Save an MP4 video (requires opencv-python):
+python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --save-video flight.mp4
+
+# Evaluate a closer curriculum stage:
+python eval.py experiments/experiment1/models/ppo_e1_5m_hk416.zip --target-radius 5
+
+# Hover-only model (ZeroTargetEnv):
+python eval.py experiments/experiment0/ppo_e0_thrust.zip --env zero
+
+# Full option list:
+python eval.py --help
+```
+
+`eval.py` prints a per-step reward table, episode summary (steps / total reward / hits), and saves a trajectory + cumulative reward plot. With `--save-video` it renders an offscreen MP4 via MuJoCo's renderer.
+
+### Record and replay a flight
+
+```bash
+python main.py --gun hk416 --targets 5 --aim-yaw --mode auto --record flight.npz
+python replay.py flight.npz
+python replay.py flight.npz --speed 0.25
+```
 
 ---
 
@@ -103,7 +185,7 @@ Training followed a three-stage pipeline, each building on the previous.
 
 ### Experiment 1 — Curriculum RL for Target Engagement
 
-**Problem:** The HK416's average recoil (79 N) exceeds the drone's own weight (57 N loaded). The policy must simultaneously navigate to a target, aim, fire, and recover from each recoil impulse. The task is too hard to learn from scratch or from a fixed-distance target. 
+**Problem:** The HK416's average recoil (79 N) exceeds the drone's own weight (57 N loaded). The policy must simultaneously navigate to a target, aim, fire, and recover from each recoil impulse. The task is too hard to learn from scratch or from a fixed-distance target.
 
 **Approach:** Distance curriculum PPO fine-tuned from the BC hover checkpoint.
 
@@ -131,72 +213,6 @@ Trained models: `experiments/experiment1/models/`
 | `ppo_e1_20m_hk416.zip`   | 20 m curriculum stage |
 | `ppo_e1_30m_hk416.zip`   | 30 m curriculum stage |
 | `ppo_e1_30m_hk416_b.zip` | 30 m, continued with sparse reward |
-
----
-
-## Run It
-
-### Interactive simulation (PID controller, no RL)
-
-```bash
-# Autonomous intercept (drone engages threat coordinates):
-python main.py --mode auto
-
-# Pilot it yourself with a different payload:
-python main.py --mode keyboard --gun pkm
-
-# List all payload options and ballistic stats:
-python main.py --list-guns
-
-# Full disturbances + projectile tracers + reproducible seed:
-python main.py --gun hk416 --targets 5 --aim-yaw --projectiles \
-               --seed 42 --recoil-noise 0.04 --wind 4 0 0 --gust 1.0
-```
-
-Keyboard mode uses **the numeric keypad** (NumLock ON):
-
-```
-7 yaw-L     8 fwd      9 yaw-R
-4 strafe-L  5 RESET    6 strafe-R
-            2 back
-+  climb               -  descend
-0  ENGAGE
-```
-
-### Evaluate and visualize trained RL models
-
-```bash
-# Live MuJoCo viewer — 30 m target, real-time playback:
-python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip
-
-# Slow down to 50% for closer inspection:
-python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --speed 0.5
-
-# Headless — print per-step stats and save reward plot (no viewer needed):
-python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --headless
-
-# Save an MP4 video (requires opencv-python):
-python eval.py experiments/experiment1/models/ppo_e1_30m_hk416_b.zip --save-video flight.mp4
-
-# Evaluate a closer curriculum stage:
-python eval.py experiments/experiment1/models/ppo_e1_5m_hk416_b.zip --target-radius 5
-
-# Hover-only model (ZeroTargetEnv):
-python eval.py experiments/experiment0/ppo_e0_thrust.zip --env zero
-
-# Full option list:
-python eval.py --help
-```
-
-`eval.py` prints a per-step reward table, episode summary (steps / total reward / hits), and saves a trajectory + cumulative reward plot. With `--save-video` it renders an offscreen MP4 via MuJoCo's renderer.
-
-### Record and replay a flight
-
-```bash
-python main.py --gun hk416 --targets 5 --aim-yaw --mode auto --record flight.npz
-python replay.py flight.npz
-python replay.py flight.npz --speed 0.25
-```
 
 ---
 
